@@ -129,7 +129,7 @@ async function showPlanning(token){
  mailAddress.placeholder="prenom.nom@groupetezenas.org";mailAddress.maxLength=254;mailAddress.required=true;
  const sendTest=btn("Envoyer un mail de test",async()=>{
    if(busy)return;const email=mailAddress.value.trim();
-   if(!mailAddress.reportValidity()||!/@(groupetezenas\.org|tezenas\.org)$/i.test(email)){mailOutput.textContent="Saisissez une adresse professionnelle Tézenas.";return;}
+   if(!mailAddress.reportValidity()||(!/@(groupetezenas\.org|tezenas\.org)$/i.test(email)&&email.toLowerCase()!=="ludovic.lorito@trustteam.fr")){mailOutput.textContent="Utilisez une adresse Tézenas ou votre adresse Trustteam autorisée pour la recette.";return;}
    if(!confirm("Envoyer un mail technique fictif à "+email+" ?"))return;
    busy=true;sendTest.disabled=true;mailOutput.textContent="Envoi en cours…";
    try{
@@ -139,7 +139,7 @@ async function showPlanning(token){
    }catch{mailOutput.textContent="Résultat incertain. Vérifiez la réception avant de relancer.";}
    finally{busy=false;sendTest.disabled=false;}
  });
- mailOutput.setAttribute("role","status");mailBox.append(el("summary","Recette messagerie V0.7.1"),el("p","Envoi réel depuis la boîte Immers’Tez, uniquement vers une adresse interne. Aucun candidat ni réservation créé."),field("Adresse professionnelle destinataire",mailAddress),sendTest,mailOutput);panel.append(mailBox);
+ mailOutput.setAttribute("role","status");mailBox.append(el("summary","Recette messagerie V0.7.2"),el("p","Envoi réel depuis la boîte Immers’Tez, vers une adresse Tézenas ou l’adresse Trustteam autorisée pour le test externe. Aucun candidat ni réservation créé."),field("Adresse professionnelle destinataire",mailAddress),sendTest,mailOutput);panel.append(mailBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
