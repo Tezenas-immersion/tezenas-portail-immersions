@@ -74,7 +74,7 @@ export async function generateRecipe(env,g,row){
  const values=Object.fromEntries(keys.filter(k=>!["DateNaissance","DateImmersion","DateRedaction"].includes(k)).map(k=>[k,row[k]]));
  values.DateNaissance=formatDate(row.DateNaissance);values.DateImmersion=formatDate(row.DateImmersion);
  values.DateRedaction=new Intl.DateTimeFormat("fr-FR",{timeZone:"Europe/Paris",day:"numeric",month:"long",year:"numeric"}).format(new Date());
- const template=await readBytes(path(env,"Modeles","Convention-Initial-Modele-Recette.docx"),g.token,"template");
+ const template=await readBytes(path(env,"Modeles","Convention-Initial-Modele-Recette.bin"),g.token,"template");
  let docx;try{docx=await fillStoredDocx(template,values);}catch(e){if(/^template_(integrity_\d+_[a-f0-9]{64}_(zip|nonzip)|zip|fields)$/.test(e?.message||""))throw e;throw Error("template_fill_exception");}
  const doc=await upload(env,g.token,name(row.ReservationID,"docx"),docx,"application/vnd.openxmlformats-officedocument.wordprocessingml.document");
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(doc.id)+"/content?format=pdf",g.token,"conversion");
