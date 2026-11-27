@@ -99,6 +99,26 @@ async function showPlanning(token){
  }
  nav.className="toolbar";nav.append(btn("‹",()=>{view.setMonth(view.getMonth()-1);render();}),month,btn("›",()=>{view.setMonth(view.getMonth()+1);render();}));
  const tabs=el("div");tabs.className="toolbar";for(const [m,t] of [["calendar","Par classe"],["global","Vue globale"],["classes","Formations et classes"]])tabs.append(btn(t,()=>{mode=m;render();}));tabs.append(btn("Actualiser",async()=>{try{await load();render();}catch(e){feedback.textContent=e.message;}}));
+ const testBox=el("details"), testOutput=el("pre"), testButton=btn("Lancer la recette (2 places fictives)",async()=>{
+   if(busy)return;
+   if(!confirm("Créer deux réservations techniques fictives dans SharePoint ? Ce test ne touche pas aux créneaux réels."))return;
+   busy=true;testButton.disabled=true;testOutput.textContent="Test en cours…";
+   const id=()=>"test-"+crypto.randomUUID().replaceAll("-","");
+   const ids=[id(),id(),id()];
+   async function attempt(requestId){
+     const r=await fetch(endpoint+"/admin/booking-test",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({requestId}),cache:"no-store"});
+     const d=await r.json();return {http:r.status,status:d.status||d.error,id:d.id||null,replayed:d.replayed===true};
+   }
+   try{
+     const results=await Promise.all(ids.map(attempt));
+     const winner=results.findIndex(x=>x.http===201);
+     const replay=winner>=0?await attempt(ids[winner]):null;
+     const passed=results.filter(x=>x.http===201).length===2&&results.filter(x=>x.http===409&&x.status==="full").length===1&&replay?.replayed===true&&replay?.id===results[winner].id;
+     testOutput.textContent=JSON.stringify({resultat:passed?"OK":"A VERIFIER",tentatives:results,repetition:replay},null,2);
+   }catch{testOutput.textContent="Test interrompu. Vérifier les lignes RECETTE-V06 avant toute nouvelle tentative.";}
+   finally{busy=false;testButton.disabled=false;}
+ });
+ testBox.append(el("summary","Recette technique V0.6"),el("p","Deux places fictives isolées. Test à effectuer une seule fois avant nettoyage des lignes de recette."),testButton,testOutput);panel.append(testBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
