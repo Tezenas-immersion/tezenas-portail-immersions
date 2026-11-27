@@ -414,7 +414,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.2",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.3",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
