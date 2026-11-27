@@ -199,9 +199,10 @@ const handler = {
         const raw=await request.text();if(raw.length>12000)return json({error:"invalid_input"},400);
         let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
         if(!b||typeof b.requestId!=="string"||!/^v08-[a-f0-9]{32}$/.test(b.requestId)||typeof b.title!=="string"||!["Voie scolaire","Apprentissage"].includes(b.way)||typeof b.date!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(b.date))return json({error:"invalid_input"},400);
-        const email=typeof b.email==="string"?b.email.trim().toLowerCase():"";
-        if(email.length>254||(!/^[a-z0-9.!#$%&'*+/=?^_+-]+@(groupetezenas\.org|tezenas\.org)$/.test(email)&&email!=="ludovic.lorito@trustteam.fr"))return json({error:"test_address_not_allowed"},400);
-        const candidate=validateCandidate({Nom:"RECETTE V08",Prenom:"Candidat fictif",Email:email,Telephone:"0600000000",Etablissement:"LYCEE FICTIF",Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0400000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true});
+        const capacityTest=b.capacityTest===true;
+        const email=capacityTest?"recette@example.invalid":typeof b.email==="string"?b.email.trim().toLowerCase():"";
+        if(!capacityTest&&(email.length>254||(!/^[a-z0-9.!#$%&'*+/=?^_+-]+@(groupetezenas\.org|tezenas\.org)$/.test(email)&&email!=="ludovic.lorito@trustteam.fr")))return json({error:"test_address_not_allowed"},400);
+        const candidate=validateCandidate({Nom:capacityTest?"RECETTE CONCURRENCE":"RECETTE V08",Prenom:"Candidat fictif",Email:email,Telephone:"0600000000",Etablissement:"LYCEE FICTIF",Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0400000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true});
         if(!candidate)return json({error:"invalid_input"},400);
         const g=await businessGraph(env);
         const rows=await g.read("Reservations",bookingFields);
@@ -219,8 +220,9 @@ const handler = {
           for(let i=1;i<=slot.Capacite;i++){
             const place=slot.DisponibiliteID+"#"+i;if(used.has(place))continue;
             const id="TEST-V08-"+crypto.randomUUID(),now=new Date().toISOString();
-            try{await g.add("Reservations",{...candidate,Title:id,ReservationID:id,DisponibiliteID:slot.DisponibiliteID,FormationID:cls.FormationID,AnneeID:slot.AnneeID,IntituleFormation:cls.Intitule,Voie:cls.Voie,DateImmersion:slot.DateImmersion,Statut:"Test",StatutConvention:"En attente",StatutMail:"En attente",DateReservation:now,DateAcceptation:now,VersionAcceptation:"RECETTE-V08",PlaceUnique:place,DemandeUnique:b.requestId});}
+            try{await g.add("Reservations",{...candidate,Title:id,ReservationID:id,DisponibiliteID:slot.DisponibiliteID,FormationID:cls.FormationID,AnneeID:slot.AnneeID,IntituleFormation:cls.Intitule,Voie:cls.Voie,DateImmersion:slot.DateImmersion,Statut:"Test",StatutConvention:capacityTest?"Non applicable":"En attente",StatutMail:capacityTest?"Non applicable":"En attente",DateReservation:now,DateAcceptation:now,VersionAcceptation:capacityTest?"RECETTE-CONCURRENCY":"RECETTE-V08",PlaceUnique:place,DemandeUnique:b.requestId});}
             catch{return json({error:"write_uncertain",requestId:b.requestId},502);}
+            if(capacityTest)return json({status:"ok",saved:true,id,classe:cls.Niveau,remaining:remaining(slot,rows)-1,test:true,capacityTest:true},201);
             let mail="Incertain";
             try{
               const graph=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent("Tezenas-immersion@tezenas.org")+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+g.token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — confirmation de réservation",body:{contentType:"Text",content:"Bonjour,\n\nVotre réservation FICTIVE a été enregistrée pour tester Immers’Tez.\nFormation : "+cls.Intitule+"\nDate : "+slot.DateImmersion+"\nRéférence : "+id+"\n\nAucune inscription réelle n’est créée. La convention de recette est traitée séparément.\n\nL’équipe Immers’Tez"},toRecipients:[{emailAddress:{address:email}}]},saveToSentItems:true})});
@@ -457,7 +459,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.10.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.11.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
