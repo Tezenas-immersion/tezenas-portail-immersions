@@ -56,7 +56,7 @@ async function showPlanning(token){
  async function load(){
    const old=select.value;data=await call("/admin/planning");
    if(!Array.isArray(data.classes)||!Array.isArray(data.slots))throw Error("Planning invalide.");
-   data.classes.sort((a,b)=>a.Ordre-b.Ordre);
+   data.classes.sort((a,b)=>a.Ordre-b.Ordre); if(typeof previewCourse!=="undefined"){previewCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));}
    select.replaceChildren(...data.classes.map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule+" · "+c.Voie+(c.Actif?"":" (inactive)"));o.value=c.FormationID;return o;}));
    if(data.classes.some(c=>c.FormationID===old))select.value=old;
    summary.textContent=data.classes.length+" classes · "+data.slots.length+" journées enregistrées · "+data.slots.filter(s=>s.Ouvert).reduce((n,s)=>n+Number(s.Capacite),0)+" places prévues";
@@ -79,8 +79,26 @@ async function showPlanning(token){
  }
  function render(){
    content.replaceChildren();editor.replaceChildren();month.textContent=view.toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
-   select.hidden=mode!=="calendar";nav.hidden=mode==="classes";
+   select.hidden=mode!=="calendar";nav.hidden=mode==="classes"||mode==="reservations";
    const id=select.value, days=new Date(view.getFullYear(),view.getMonth()+1,0).getDate(), dateAt=d=>iso(new Date(view.getFullYear(),view.getMonth(),d));
+   if(mode==="reservations"){
+     const area=el("div");content.append(area);
+     area.append(el("p","Chargement des réservations…"));
+     call("/admin/reservations").then(d=>{
+       area.replaceChildren();
+       if(!d.rows.length)area.append(el("p","Aucune réservation réelle enregistrée."));
+       const table=el("table"),head=el("tr"),wrap=el("div");wrap.className="tablewrap";
+       for(const t of ["Candidat","Formation / classe","Date","État","Convention","Action"])head.append(el("th",t));table.append(head);
+       for(const r of d.rows.sort((a,b)=>String(a.date).localeCompare(String(b.date)))){
+         const tr=el("tr");
+         for(const t of [r.prenom+" "+r.nom,r.formation+" / "+r.classe,r.date,r.statut,r.convention||"—"])tr.append(el("td",t));
+         const td=el("td"),cancel=btn("Annuler",async()=>{if(busy||!confirm("Annuler cette réservation et libérer la place ?"))return;busy=true;try{await call("/admin/reservation-change",{action:"cancel",id:r.id,etag:r.etag});feedback.textContent="Réservation annulée.";render();}catch(e){feedback.textContent=e.message;}finally{busy=false;}});
+         cancel.disabled=["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());td.append(cancel);tr.append(td);table.append(tr);
+       }
+       if(d.rows.length){wrap.append(table);area.append(wrap);}
+       area.append(el("p",d.recipeCount+" ligne(s) de recette V0.6 exclue(s)."));
+     }).catch(e=>{area.replaceChildren(el("p",e.message));});return;
+   }
    if(mode==="classes"){for(const c of data.classes){const row=el("div");row.className="classrow";row.append(el("span",c.Niveau+" — "+c.Intitule+" · "+c.Voie+(c.Actif?"":" · inactive")),btn("Modifier",()=>classEdit(c)));content.append(row);}content.append(btn("Ajouter une classe",()=>classEdit(null)));return;}
    if(mode==="global"){
      const wrap=el("div");wrap.className="tablewrap";const table=el("table"), head=el("tr");head.append(el("th","Classe"));for(let d=1;d<=days;d++)head.append(el("th",String(d)));table.append(head);
@@ -98,27 +116,15 @@ async function showPlanning(token){
    }));content.append(bulk);
  }
  nav.className="toolbar";nav.append(btn("‹",()=>{view.setMonth(view.getMonth()-1);render();}),month,btn("›",()=>{view.setMonth(view.getMonth()+1);render();}));
- const tabs=el("div");tabs.className="toolbar";for(const [m,t] of [["calendar","Par classe"],["global","Vue globale"],["classes","Formations et classes"]])tabs.append(btn(t,()=>{mode=m;render();}));tabs.append(btn("Actualiser",async()=>{try{await load();render();}catch(e){feedback.textContent=e.message;}}));
- const testBox=el("details"), testOutput=el("pre"), testButton=btn("Lancer la recette (2 places fictives)",async()=>{
-   if(busy)return;
-   if(!confirm("Créer deux réservations techniques fictives dans SharePoint ? Ce test ne touche pas aux créneaux réels."))return;
-   busy=true;testButton.disabled=true;testOutput.textContent="Test en cours…";
-   const id=()=>"test-"+crypto.randomUUID().replaceAll("-","");
-   const ids=[id(),id(),id()];
-   async function attempt(requestId){
-     const r=await fetch(endpoint+"/admin/booking-test",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({requestId}),cache:"no-store"});
-     const d=await r.json();return {http:r.status,status:d.status||d.error,id:d.id||null,replayed:d.replayed===true};
-   }
-   try{
-     const results=await Promise.all(ids.map(attempt));
-     const winner=results.findIndex(x=>x.http===201);
-     const replay=winner>=0?await attempt(ids[winner]):null;
-     const passed=results.filter(x=>x.http===201).length===2&&results.filter(x=>x.http===409&&x.status==="full").length===1&&replay?.replayed===true&&replay?.id===results[winner].id;
-     testOutput.textContent=JSON.stringify({resultat:passed?"OK":"A VERIFIER",tentatives:results,repetition:replay},null,2);
-   }catch{testOutput.textContent="Test interrompu. Vérifier les lignes RECETTE-V06 avant toute nouvelle tentative.";}
-   finally{busy=false;testButton.disabled=false;}
- });
- testBox.append(el("summary","Recette technique V0.6"),el("p","Deux places fictives isolées. Test à effectuer une seule fois avant nettoyage des lignes de recette."),testButton,testOutput);panel.append(testBox);
+ const tabs=el("div");tabs.className="toolbar";for(const [m,t] of [["calendar","Par classe"],["global","Vue globale"],["classes","Formations et classes"],["reservations","Réservations"]])tabs.append(btn(t,()=>{mode=m;render();}));tabs.append(btn("Actualiser",async()=>{try{await load();render();}catch(e){feedback.textContent=e.message;}}));
+ const recipe=el("details"),output=el("p");recipe.append(el("summary","Nettoyage de la recette V0.6"),el("p","Supprime uniquement les inscriptions techniques RECETTE-V06 identifiées par le serveur."),btn("Nettoyer les tests V0.6",async()=>{if(busy||!confirm("Supprimer les réservations fictives V0.6 ?"))return;busy=true;try{const d=await call("/admin/reservation-change",{action:"cleanup-v06"});output.textContent=d.removed+" ligne(s) de recette supprimée(s).";}catch(e){output.textContent=e.message;}finally{busy=false;}}),output);panel.append(recipe);
+ const previewBox=el("details"),previewCourse=el("select"),previewDate=inp("date",""),previewResult=el("pre");
+ previewBox.append(el("summary","Recette métier V0.7"),el("p","Validation serveur d’un candidat fictif sur le vrai planning, sans enregistrement."),field("Formation",previewCourse),field("Date",previewDate),btn("Vérifier le créneau",async()=>{
+   if(busy)return;const c=data.classes.find(x=>x.FormationID===previewCourse.value);if(!c||!previewDate.value)return;
+   const candidate={Nom:"RECETTE",Prenom:"FICTIF",Email:"recette@example.invalid",Telephone:"0600000000",Etablissement:"LYCEE FICTIF",Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0400000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true};
+   try{previewResult.textContent=JSON.stringify(await call("/admin/booking-preview",{title:c.Intitule,way:c.Voie,date:previewDate.value,candidate}),null,2);}catch(e){previewResult.textContent=e.message;}
+ }),previewResult);panel.append(previewBox);
+
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
