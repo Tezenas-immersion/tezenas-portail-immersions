@@ -17,16 +17,16 @@ function render(){
  const ids=new Set(classes.filter(c=>c.title===course).map(c=>c.id)),cells=["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map(x=>node("small",x));
  for(let i=0;i<(view.getDay()+6)%7;i++)cells.push(node("span",""));
  for(let d=1;d<=new Date(view.getFullYear(),view.getMonth()+1,0).getDate();d++){
-  const date=iso(view.getFullYear(),view.getMonth(),d),capacity=slots.filter(s=>ids.has(s.classId)&&s.date===date).reduce((a,s)=>a+s.capacity,0);
+  const date=iso(view.getFullYear(),view.getMonth(),d),daySlots=slots.filter(s=>ids.has(s.classId)&&s.date===date),capacity=daySlots.reduce((a,s)=>a+s.remaining,0);
   const b=button(String(d),()=>{selected=date;render();});b.disabled=capacity===0;
-  if(capacity){b.classList.add("open");b.append(node("small",capacity+" prév."));b.title=fmt.format(new Date(date+"T12:00:00Z"))+" — "+capacity+" places prévues";}
-  if(selected===date)b.classList.add("active");cells.push(b);
+  if(capacity){b.classList.add("open");b.append(node("small",capacity+" libres"));b.title=fmt.format(new Date(date+"T12:00:00Z"))+" — "+capacity+" places restantes";}
+  if(daySlots.length&&!capacity)b.append(node("small","Complet"));if(selected===date)b.classList.add("active");cells.push(b);
  }
  $("calendar").replaceChildren(...cells);
  $("selection").textContent=selected?course+" — "+fmt.format(new Date(selected+"T12:00:00Z"))+". Les inscriptions ne sont pas encore ouvertes.":"";
  const formPanel=$("formPanel");
  if(formPanel){
-   formPanel.hidden=!selected||way!=="Voie scolaire"||!slots.some(s=>ids.has(s.classId)&&s.date===selected);
+   formPanel.hidden=!selected||way!=="Voie scolaire"||!slots.some(s=>ids.has(s.classId)&&s.date===selected&&s.remaining>0);
    $("bookingSummary").textContent=formPanel.hidden?"":course+" — "+fmt.format(new Date(selected+"T12:00:00Z"))+" — journée entière, horaires communiqués ultérieurement.";
    $("preview").textContent="";
  }
