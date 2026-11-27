@@ -1,3 +1,35 @@
+const TENANT="a7f315c0-79f6-4c05-92b6-c9396003e258";
+const API_ID="281e44b3-c333-4048-96e8-9765b2e6e30f";
+const SPA_ID="1cbae7de-d9fc-4659-a7da-c0623c96e789";
+const issuer="https://login.microsoftonline.com/"+TENANT+"/v2.0";
+function decode(s){if(!/^[A-Za-z0-9_-]+$/.test(s))throw Error("encoding");return Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/").padEnd(Math.ceil(s.length/4)*4,"=")),c=>c.charCodeAt(0));}
+function object(s){return JSON.parse(new TextDecoder().decode(decode(s)));}
+let keysCache=null, keysUntil=0;
+async function keys(force=false){
+  if(!force&&keysCache&&Date.now()<keysUntil)return keysCache;
+  const response=await fetch("https://login.microsoftonline.com/"+TENANT+"/discovery/v2.0/keys",{redirect:"error"});
+  if(!response.ok)throw Error("keys");
+  const data=await response.json();if(!Array.isArray(data.keys))throw Error("keys");
+  keysCache=data.keys;keysUntil=Date.now()+3600000;return keysCache;
+}
+async function authorize(request){
+  const value=request.headers.get("Authorization")||"";
+  if(!value.startsWith("Bearer ")||value.length>20000)return 401;
+  try{
+    const parts=value.slice(7).split(".");if(parts.length!==3)return 401;
+    const h=object(parts[0]), p=object(parts[1]);
+    if(h.alg!=="RS256"||typeof h.kid!=="string")return 401;
+    const now=Math.floor(Date.now()/1000);
+    if(p.ver!=="2.0"||p.iss!==issuer||p.tid!==TENANT||p.aud!==API_ID||p.azp!==SPA_ID||typeof p.oid!=="string"||!Number.isFinite(p.exp)||!Number.isFinite(p.nbf)||p.exp<=now||p.nbf>now+60)return 401;
+    const match=k=>k.kid===h.kid&&k.kty==="RSA"&&(!k.use||k.use==="sig");
+    let jwk=(await keys()).find(match);if(!jwk)jwk=(await keys(true)).find(match);if(!jwk)return 401;
+    if(jwk.issuer&&jwk.issuer.replace("{tenantid}",TENANT)!==issuer)return 401;
+    const key=await crypto.subtle.importKey("jwk",{kty:"RSA",n:jwk.n,e:jwk.e,alg:"RS256",ext:true},{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
+    if(!await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,decode(parts[2]),new TextEncoder().encode(parts[0]+"."+parts[1])))return 401;
+    if(typeof p.scp!=="string"||!p.scp.split(" ").includes("access_as_user")||!Array.isArray(p.roles)||!p.roles.includes("Immersions.Admin"))return 403;
+    return 200;
+  }catch{return 401;}
+}
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -6,8 +38,16 @@ export default {
     if(origin === "https://tezenas-immersion.github.io") {
       headers.set("Access-Control-Allow-Origin",origin);
       headers.set("Access-Control-Allow-Methods","GET, OPTIONS");
+      headers.set("Access-Control-Allow-Headers","Authorization");
     }
     const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
+    if(url.pathname === "/admin/session") {
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="GET")return json({error:"method_not_allowed"},405);
+      const status=await authorize(request);
+      if(status!==200)return json({error:status===403?"forbidden":"unauthorized"},status);
+      return json({status:"ok",role:"Immersions.Admin",mode:"auth-test"});
+    }
     if(url.pathname === "/diagnostic/graph") {
       if(request.method !== "POST") return json({error:"method_not_allowed"},405);
       const supplied=request.headers.get("X-Diagnostic-Key") || "";
@@ -119,7 +159,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.4",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
