@@ -6,7 +6,7 @@ async function businessGraph(env){
  const token=(await response.json()).access_token;if(!token)throw Error("graph_token");
  const base="https://graph.microsoft.com/v1.0/sites/"+encodeURIComponent(env.SP_SITE_ID)+"/lists/";
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
- return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push({...item.fields,_itemId:item.id,_etag:item.eTag});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();},async remove(list,item){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId,{method:"DELETE",headers:{...headers,"If-Match":item._etag}});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_delete");},async patch(list,item,fields){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId+"/fields",{method:"PATCH",headers:{...headers,"If-Match":item._etag},body:JSON.stringify(fields)});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_write");}};
+ return {token,async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push({...item.fields,_itemId:item.id,_etag:item.eTag});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();},async remove(list,item){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId,{method:"DELETE",headers:{...headers,"If-Match":item._etag}});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_delete");},async patch(list,item,fields){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId+"/fields",{method:"PATCH",headers:{...headers,"If-Match":item._etag},body:JSON.stringify(fields)});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_write");}};
 }
 const classFields=["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"];
 const slotFields=["DisponibiliteID","FormationID","AnneeID","DateImmersion","Capacite","Ouvert"];
@@ -75,7 +75,7 @@ async function authorize(request){
     return deny("verification_exception_"+stage+"_"+type+(code?"_"+code:""));
   }
 }
-export default {
+const handler = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = request.headers.get("Origin");
@@ -115,6 +115,48 @@ export default {
         const allowed=new Set(active.map(c=>c.FormationID));
         return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite,remaining:remaining(s,rows)}))});
       }catch{return json({error:"planning_unavailable"},502);}
+    }
+    if(url.pathname === "/admin/booking-create"){
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+      const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
+      try{
+        const raw=await request.text();if(raw.length>12000)return json({error:"invalid_input"},400);
+        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        if(!b||typeof b.requestId!=="string"||!/^v08-[a-f0-9]{32}$/.test(b.requestId)||typeof b.title!=="string"||!["Voie scolaire","Apprentissage"].includes(b.way)||typeof b.date!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(b.date))return json({error:"invalid_input"},400);
+        const email=typeof b.email==="string"?b.email.trim().toLowerCase():"";
+        if(email.length>254||(!/^[a-z0-9.!#$%&'*+/=?^_+-]+@(groupetezenas\.org|tezenas\.org)$/.test(email)&&email!=="ludovic.lorito@trustteam.fr"))return json({error:"test_address_not_allowed"},400);
+        const candidate=validateCandidate({Nom:"RECETTE V08",Prenom:"Candidat fictif",Email:email,Telephone:"0600000000",Etablissement:"LYCEE FICTIF",Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0400000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true});
+        if(!candidate)return json({error:"invalid_input"},400);
+        const g=await businessGraph(env);
+        const rows=await g.read("Reservations",bookingFields);
+        const prior=rows.find(r=>r.DemandeUnique===b.requestId);
+        if(prior)return json({status:"ok",saved:true,replayed:true,id:prior.ReservationID,classe:prior.FormationID,mail:prior.StatutMail,statut:prior.Statut});
+        if(b.date<=cutoff())return json({error:"deadline"},409);
+        const [classes,slots]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields)]);
+        const eligible=classes.filter(c=>c.Actif===true&&c.Voie===b.way&&c.Intitule===b.title);
+        const choices=slots.filter(s=>s.Ouvert===true&&s.DateImmersion===b.date&&eligible.some(c=>c.FormationID===s.FormationID)&&Number.isInteger(s.Capacite)&&s.Capacite>0&&s.Capacite<=30&&remaining(s,rows)>0).sort((a,b)=>remaining(b,rows)-remaining(a,rows)||String(a.FormationID).localeCompare(String(b.FormationID)));
+        if(!choices.length)return json({error:"full_or_closed"},409);
+        const used=new Set(rows.map(r=>r.PlaceUnique));
+        for(const slot of choices){
+          if(slots.filter(x=>x.FormationID===slot.FormationID&&x.DateImmersion===slot.DateImmersion).length!==1)return json({error:"duplicate_slot"},409);
+          const cls=eligible.find(c=>c.FormationID===slot.FormationID);
+          for(let i=1;i<=slot.Capacite;i++){
+            const place=slot.DisponibiliteID+"#"+i;if(used.has(place))continue;
+            const id="TEST-V08-"+crypto.randomUUID(),now=new Date().toISOString();
+            try{await g.add("Reservations",{...candidate,Title:id,ReservationID:id,DisponibiliteID:slot.DisponibiliteID,FormationID:cls.FormationID,AnneeID:slot.AnneeID,IntituleFormation:cls.Intitule,Voie:cls.Voie,DateImmersion:slot.DateImmersion,Statut:"Test",StatutConvention:"En attente",StatutMail:"En attente",DateReservation:now,DateAcceptation:now,VersionAcceptation:"RECETTE-V08",PlaceUnique:place,DemandeUnique:b.requestId});}
+            catch{return json({error:"write_uncertain",requestId:b.requestId},502);}
+            let mail="Incertain";
+            try{
+              const graph=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent("Tezenas-immersion@tezenas.org")+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+g.token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — confirmation de réservation",body:{contentType:"Text",content:"Bonjour,\n\nVotre réservation FICTIVE a été enregistrée pour tester Immers’Tez.\nFormation : "+cls.Intitule+"\nDate : "+slot.DateImmersion+"\nRéférence : "+id+"\n\nAucune inscription réelle ni convention n’est émise.\n\nL’équipe Immers’Tez"},toRecipients:[{emailAddress:{address:email}}]},saveToSentItems:true})});
+              mail=graph.status===202?"Accepte Graph":graph.status>=500?"Incertain":"Echec";
+            }catch{}
+            try{const saved=(await g.read("Reservations",["ReservationID","StatutMail"])).find(x=>x.ReservationID===id);if(saved)await g.patch("Reservations",saved,{StatutMail:mail});else mail="Incertain";}catch{mail="Incertain";}
+            return json({status:"ok",saved:true,id,classe:cls.Niveau,mail,remaining:remaining(slot,rows)-1,test:true},201);
+          }
+        }
+        return json({error:"full_or_closed"},409);
+      }catch{return json({error:"operation_failed"},502);}
     }
     if(url.pathname === "/admin/reservations" || url.pathname === "/admin/reservation-change" || url.pathname === "/admin/booking-preview"){
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
@@ -338,7 +380,28 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.2",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.8.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
+  }
+};
+
+export class MutationGate {
+  constructor(state,env){this.env=env;this.tail=Promise.resolve();}
+  async fetch(request){
+    const job=this.tail.then(()=>handler.fetch(request,this.env));
+    this.tail=job.then(()=>{},()=>{});
+    return job;
+  }
+}
+export default {
+  async fetch(request,env){
+    const url=new URL(request.url);
+    const write=request.method==="POST"&&["/admin/change","/admin/reservation-change","/admin/booking-create"].includes(url.pathname);
+    if(request.method==="POST"&&url.pathname==="/diagnostic/graph"&&(url.searchParams.has("importClass")||url.searchParams.has("init")))return new Response(JSON.stringify({error:"bootstrap_disabled"}),{status:403,headers:{"Content-Type":"application/json"}});
+    if(write){
+      if(!env.MUTATION_GATE)return new Response(JSON.stringify({error:"mutation_gate_unavailable"}),{status:503,headers:{"Content-Type":"application/json","Access-Control-Allow-Origin":"https://tezenas-immersion.github.io"}});
+      return env.MUTATION_GATE.get(env.MUTATION_GATE.idFromName("immersions-global")).fetch(request);
+    }
+    return handler.fetch(request,env);
   }
 };
