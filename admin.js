@@ -106,13 +106,19 @@ async function showPlanning(token){
              catch(e){feedback.textContent="Génération : "+e.message;alert("Génération : "+e.message);}finally{busy=false;generate.disabled=false;generate.textContent="Générer la convention";}
            });td.append(generate);
          }
-         if(r.convention==="Recette generee"){
+         if(["Recette generee","Recette PDF accepte Graph","Recette PDF envoi incertain","Recette PDF echec"].includes(r.convention)){
            const download=btn("Télécharger PDF",async()=>{if(busy)return;busy=true;try{
              const res=await fetch(endpoint+"/admin/convention-download?id="+encodeURIComponent(r.id),{headers:{Authorization:"Bearer "+token},cache:"no-store"});
              if(!res.ok){const d=await res.json();throw Error(d.error||res.status);}
              const blob=await res.blob();if(blob.type!=="application/pdf")throw Error("Format inattendu");
              const url=URL.createObjectURL(blob);const a=el("a");a.href=url;a.download="RECETTE-"+r.id+".pdf";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
            }catch(e){feedback.textContent=e.message;}finally{busy=false;}});td.append(download);
+         }
+         if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"&&["En attente","Recette generee","Recette PDF echec"].includes(r.convention)){
+           const send=btn("Traiter la convention de recette",async()=>{if(busy||!confirm("Générer si nécessaire et envoyer le PDF de recette uniquement à l’adresse Trustteam autorisée ?"))return;busy=true;send.disabled=true;send.textContent="Traitement en cours…";
+             try{const res=await fetch(endpoint+"/admin/convention-send-test",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({id:r.id}),cache:"no-store"});const d=await res.json();if(!res.ok)throw Error(d.error||res.status);feedback.textContent=d.convention;render();}
+             catch(e){feedback.textContent="Convention : "+e.message;alert(feedback.textContent);}finally{busy=false;send.disabled=false;}
+           });td.append(send);
          }
          tr.append(td);table.append(tr);
        }
@@ -170,7 +176,7 @@ async function showPlanning(token){
    const body={title:c.Intitule,way:c.Voie,date:bookingDate.value,email:bookingEmail.value.trim()};
    const key=JSON.stringify(body);
    if(pendingBooking&&pendingBooking.key!==key){bookingOutput.textContent="Une demande précédente est en attente. Vérifiez son résultat avec les mêmes paramètres avant de continuer.";return;}
-   if(!confirm("Créer une réservation fictive sur ce vrai créneau et envoyer un mail de recette ?"))return;
+   if(!confirm("Créer une réservation fictive, envoyer la confirmation et traiter la convention PDF de recette ?"))return;
    if(!pendingBooking)pendingBooking={key,requestId:"v08-"+crypto.randomUUID().replaceAll("-","")};
    busy=true;createBooking.disabled=true;
    try{
@@ -181,7 +187,7 @@ async function showPlanning(token){
    }catch{bookingOutput.textContent="Résultat incertain. Relancez avec les mêmes paramètres sans actualiser la page.";}
    finally{busy=false;createBooking.disabled=false;}
  });
- bookingBox.append(el("summary","Recette inscription V0.8"),el("p","Candidat fictif imposé par le serveur. Occupe réellement une place sur le planning : annulez la réservation après le test."),field("Formation",bookingCourse),field("Date",bookingDate),field("Adresse de réception du mail de recette",bookingEmail),createBooking,bookingOutput);panel.append(bookingBox);
+ bookingBox.append(el("summary","Recette inscription V0.10"),el("p","Candidat fictif imposé par le serveur. Confirmation au destinataire choisi et convention Initial envoyée uniquement à Trustteam. Occupe une place : annulez après le test."),field("Formation",bookingCourse),field("Date",bookingDate),field("Adresse de réception du mail de recette",bookingEmail),createBooking,bookingOutput);panel.append(bookingBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
