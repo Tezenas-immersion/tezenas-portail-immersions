@@ -56,7 +56,7 @@ async function showPlanning(token){
  async function load(){
    const old=select.value;data=await call("/admin/planning");
    if(!Array.isArray(data.classes)||!Array.isArray(data.slots))throw Error("Planning invalide.");
-   data.classes.sort((a,b)=>a.Ordre-b.Ordre); if(typeof previewCourse!=="undefined"){previewCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));}
+   data.classes.sort((a,b)=>a.Ordre-b.Ordre); bookingCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;})); if(typeof previewCourse!=="undefined"){previewCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));}
    select.replaceChildren(...data.classes.map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule+" · "+c.Voie+(c.Actif?"":" (inactive)"));o.value=c.FormationID;return o;}));
    if(data.classes.some(c=>c.FormationID===old))select.value=old;
    summary.textContent=data.classes.length+" classes · "+data.slots.length+" journées enregistrées · "+data.slots.filter(s=>s.Ouvert).reduce((n,s)=>n+Number(s.Capacite),0)+" places prévues";
@@ -88,10 +88,10 @@ async function showPlanning(token){
        area.replaceChildren();
        if(!d.rows.length)area.append(el("p","Aucune réservation réelle enregistrée."));
        const table=el("table"),head=el("tr"),wrap=el("div");wrap.className="tablewrap";
-       for(const t of ["Candidat","Formation / classe","Date","État","Convention","Action"])head.append(el("th",t));table.append(head);
+       for(const t of ["Candidat","Formation / classe","Date","État","Convention","Mail","Action"])head.append(el("th",t));table.append(head);
        for(const r of d.rows.sort((a,b)=>String(a.date).localeCompare(String(b.date)))){
          const tr=el("tr");
-         for(const t of [r.prenom+" "+r.nom,r.formation+" / "+r.classe,r.date,r.statut,r.convention||"—"])tr.append(el("td",t));
+         for(const t of [r.prenom+" "+r.nom,r.formation+" / "+r.classe,r.date,r.statut,r.convention||"—",r.mail||"—"])tr.append(el("td",t));
          const td=el("td"),cancel=btn("Annuler",async()=>{if(busy||!confirm("Annuler cette réservation et libérer la place ?"))return;busy=true;try{await call("/admin/reservation-change",{action:"cancel",id:r.id,etag:r.etag});feedback.textContent="Réservation annulée.";render();}catch(e){feedback.textContent=e.message;}finally{busy=false;}});
          cancel.disabled=["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());td.append(cancel);tr.append(td);table.append(tr);
        }
@@ -140,6 +140,27 @@ async function showPlanning(token){
    finally{busy=false;sendTest.disabled=false;}
  });
  mailOutput.setAttribute("role","status");mailBox.append(el("summary","Recette messagerie V0.7.2"),el("p","Envoi réel depuis la boîte Immers’Tez, vers une adresse Tézenas ou l’adresse Trustteam autorisée pour le test externe. Aucun candidat ni réservation créé."),field("Adresse professionnelle destinataire",mailAddress),sendTest,mailOutput);panel.append(mailBox);
+ const bookingBox=el("details"),bookingCourse=el("select"),bookingDate=inp("date",""),bookingEmail=inp("email",""),bookingOutput=el("pre");
+ let pendingBooking=null;
+ bookingEmail.placeholder="Adresse de recette autorisée";bookingEmail.required=true;
+ const createBooking=btn("Créer une réservation fictive",async()=>{
+   if(busy)return;const c=data.classes.find(x=>x.FormationID===bookingCourse.value);
+   if(!c||!bookingDate.value||!bookingEmail.reportValidity())return;
+   const body={title:c.Intitule,way:c.Voie,date:bookingDate.value,email:bookingEmail.value.trim()};
+   const key=JSON.stringify(body);
+   if(pendingBooking&&pendingBooking.key!==key){bookingOutput.textContent="Une demande précédente est en attente. Vérifiez son résultat avec les mêmes paramètres avant de continuer.";return;}
+   if(!confirm("Créer une réservation fictive sur ce vrai créneau et envoyer un mail de recette ?"))return;
+   if(!pendingBooking)pendingBooking={key,requestId:"v08-"+crypto.randomUUID().replaceAll("-","")};
+   busy=true;createBooking.disabled=true;
+   try{
+     const response=await fetch(endpoint+"/admin/booking-create",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({...body,requestId:pendingBooking.requestId}),cache:"no-store"});
+     const d=await response.json();bookingOutput.textContent=JSON.stringify(d,null,2);
+     if(response.ok||[400,409].includes(response.status))pendingBooking=null;
+     if(response.ok){await load();render();}
+   }catch{bookingOutput.textContent="Résultat incertain. Relancez avec les mêmes paramètres sans actualiser la page.";}
+   finally{busy=false;createBooking.disabled=false;}
+ });
+ bookingBox.append(el("summary","Recette inscription V0.8"),el("p","Candidat fictif imposé par le serveur. Occupe réellement une place sur le planning : annulez la réservation après le test."),field("Formation",bookingCourse),field("Date",bookingDate),field("Adresse de réception du mail de recette",bookingEmail),createBooking,bookingOutput);panel.append(bookingBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
