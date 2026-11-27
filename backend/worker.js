@@ -6,11 +6,27 @@ async function businessGraph(env){
  const token=(await response.json()).access_token;if(!token)throw Error("graph_token");
  const base="https://graph.microsoft.com/v1.0/sites/"+encodeURIComponent(env.SP_SITE_ID)+"/lists/";
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
- return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push({...item.fields,_itemId:item.id,_etag:item.eTag});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();},async patch(list,item,fields){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId+"/fields",{method:"PATCH",headers:{...headers,"If-Match":item._etag},body:JSON.stringify(fields)});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_write");}};
+ return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push({...item.fields,_itemId:item.id,_etag:item.eTag});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();},async remove(list,item){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId,{method:"DELETE",headers:{...headers,"If-Match":item._etag}});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_delete");},async patch(list,item,fields){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId+"/fields",{method:"PATCH",headers:{...headers,"If-Match":item._etag},body:JSON.stringify(fields)});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_write");}};
 }
 const classFields=["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"];
 const slotFields=["DisponibiliteID","FormationID","AnneeID","DateImmersion","Capacite","Ouvert"];
 function cutoff(){const d=new Date(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Paris",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date())+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+7);return d.toISOString().slice(0,10);}
+
+const bookingFields=["ReservationID","DisponibiliteID","FormationID","AnneeID","IntituleFormation","Voie","DateImmersion","Nom","Prenom","Email","Telephone","Etablissement","Statut","ConventionID","StatutConvention","StatutMail","DateReservation","Civilite","DateNaissance","VilleResidence","CodePostalResidence","Terminale","SpecialitesBac","AdresseEtablissement","EmailEtablissement","TelephoneEtablissement","CiviliteChef","ChefEtablissement","Acceptation","DateAcceptation","VersionAcceptation","PlaceUnique","DemandeUnique"];
+const cancelled=r=>["annule","annulee","annulé","annulée","cancelled"].includes(String(r.Statut||"").toLowerCase());
+const isRecipe=r=>r.DisponibiliteID==="RECETTE-V06";
+function validateCandidate(b){
+ if(!b||typeof b!=="object"||Array.isArray(b))return null;
+ const lengths={Nom:100,Prenom:100,Email:254,Telephone:30,Etablissement:200,Civilite:20,DateNaissance:10,VilleResidence:120,CodePostalResidence:5,Terminale:30,SpecialitesBac:200,AdresseEtablissement:400,EmailEtablissement:254,TelephoneEtablissement:30,CiviliteChef:20,ChefEtablissement:200};
+ const out={};
+ for(const [k,max] of Object.entries(lengths)){if(typeof b[k]!=="string"||!b[k].trim()||b[k].trim().length>max)return null;out[k]=b[k].trim();}
+ if(!["Madame","Monsieur"].includes(out.Civilite)||!["Madame","Monsieur"].includes(out.CiviliteChef)||!["Professionnelle","Technologique","Générale"].includes(out.Terminale))return null;
+ if(!/^\d{5}$/.test(out.CodePostalResidence)||![out.Email,out.EmailEtablissement].every(e=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))||![out.Telephone,out.TelephoneEtablissement].every(t=>/^[+0-9().\s-]{6,30}$/.test(t)&&t.replace(/\D/g,"").length>=6))return null;
+ const d=new Date(out.DateNaissance+"T12:00:00Z");if(!/^\d{4}-\d{2}-\d{2}$/.test(out.DateNaissance)||!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==out.DateNaissance||out.DateNaissance<"1900-01-01"||d>new Date())return null;
+ if(b.Acceptation!==true)return null;return {...out,Acceptation:true};
+}
+function remaining(slot,rows){return Math.max(0,Number(slot.Capacite)-rows.filter(r=>r.DisponibiliteID===slot.DisponibiliteID&&!cancelled(r)).length);}
+
 const TENANT="a7f315c0-79f6-4c05-92b6-c9396003e258";
 const API_ID="281e44b3-c333-4048-96e8-9765b2e6e30f";
 const SPA_ID="1cbae7de-d9fc-4659-a7da-c0623c96e789";
@@ -75,45 +91,53 @@ export default {
       if(request.method!=="GET")return json({error:"method_not_allowed"},405);
       try {
         const g=await businessGraph(env);
-        const [classes,slots]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields)]);
+        const [classes,slots,rows]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields),g.read("Reservations",["DisponibiliteID","Statut"])]);
         const limit=cutoff();
         const active=classes.filter(c=>c.Actif===true&&c.Voie==="Voie scolaire");
         const allowed=new Set(active.map(c=>c.FormationID));
-        return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite}))});
+        return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite,remaining:remaining(s,rows)}))});
       }catch{return json({error:"planning_unavailable"},502);}
     }
-    // Restricted synthetic-data test. No public write endpoint.
-    if(url.pathname === "/admin/booking-test") {
+    if(url.pathname === "/admin/reservations" || url.pathname === "/admin/reservation-change" || url.pathname === "/admin/booking-preview"){
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
-      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
       const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
       try{
-        const raw=await request.text();if(raw.length>2000)return json({error:"invalid_input"},400);
-        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
-        if(!b||typeof b.requestId!=="string"||!/^test-[a-f0-9]{32}$/.test(b.requestId))return json({error:"invalid_input"},400);
         const g=await businessGraph(env);
-        const fields=["ReservationID","DisponibiliteID","Statut","PlaceUnique","DemandeUnique"];
-        const existing=await g.read("Reservations",fields);
-        const previous=existing.find(x=>x.DemandeUnique===b.requestId);
-        if(previous)return json({status:"ok",test:true,id:previous.ReservationID,replayed:true});
-        // Dedicated synthetic namespace, never consumes an actual class slot.
-        const used=new Set(existing.map(x=>x.PlaceUnique));
-        for(let i=1;i<=2;i++){
-          const place="RECETTE-V06-"+i;if(used.has(place))continue;
-          const id="TEST-"+crypto.randomUUID();
-          const now=new Date().toISOString();
-          try{
-            await g.add("Reservations",{Title:id,ReservationID:id,DisponibiliteID:"RECETTE-V06",FormationID:"RECETTE",AnneeID:"2026-2027",IntituleFormation:"TEST TECHNIQUE",Voie:"Voie scolaire",DateImmersion:"2027-01-15",Nom:"RECETTE",Prenom:"FICTIF",Email:"recette@example.invalid",Telephone:"0000000000",Etablissement:"LYCEE FICTIF",Statut:"Test",StatutConvention:"En attente",StatutMail:"En attente",DateReservation:now,Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0000000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true,DateAcceptation:now,VersionAcceptation:"RECETTE-V06",PlaceUnique:place,DemandeUnique:b.requestId});
-            return json({status:"ok",test:true,id,replayed:false},201);
-          }catch{
-            const current=await g.read("Reservations",fields);
-            const duplicate=current.find(x=>x.DemandeUnique===b.requestId);
-            if(duplicate)return json({status:"ok",test:true,id:duplicate.ReservationID,replayed:true});
-            if(!current.some(x=>x.PlaceUnique===place))return json({error:"test_write_failed"},502);
-          }
+        if(url.pathname==="/admin/reservations"){
+          if(request.method!=="GET")return json({error:"method_not_allowed"},405);
+          const rows=await g.read("Reservations",bookingFields);
+          return json({status:"ok",rows:rows.filter(r=>!isRecipe(r)).map(r=>({id:r.ReservationID,nom:r.Nom,prenom:r.Prenom,formation:r.IntituleFormation,classe:r.FormationID,date:r.DateImmersion,statut:r.Statut,email:r.Email,convention:r.StatutConvention,mail:r.StatutMail,etag:r._etag})),recipeCount:rows.filter(isRecipe).length});
         }
-        return json({error:"full",test:true},409);
-      }catch{return json({error:"test_failed"},502);}
+        if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+        const raw=await request.text();if(raw.length>12000)return json({error:"invalid_input"},400);
+        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        if(!b||typeof b!=="object")return json({error:"invalid_input"},400);
+        if(url.pathname==="/admin/reservation-change"){
+          const rows=await g.read("Reservations",["ReservationID","DisponibiliteID","FormationID","Statut","PlaceUnique","DemandeUnique"]);
+          if(b.action==="cancel"){
+            const row=rows.find(r=>r.ReservationID===b.id&&!isRecipe(r));if(!row)return json({error:"not_found"},404);
+            if(cancelled(row))return json({status:"ok",already:true});
+            if(row._etag!==b.etag)return json({error:"conflict"},409);
+            await g.patch("Reservations",row,{Statut:"Annulee",PlaceUnique:"ANNULEE-"+row.ReservationID});
+            return json({status:"ok"});
+          }
+          if(b.action==="cleanup-v06"){
+            const tests=rows.filter(r=>isRecipe(r)&&r.FormationID==="RECETTE"&&r.Statut==="Test"&&/^TEST-[0-9a-f-]{36}$/.test(r.ReservationID)&&/^RECETTE-V06-[12]$/.test(r.PlaceUnique)&&/^test-[a-f0-9]{32}$/.test(r.DemandeUnique));
+            let removed=0;for(const row of tests){await g.remove("Reservations",row);removed++;}
+            return json({status:"ok",removed});
+          }
+          return json({error:"invalid_input"},400);
+        }
+        const candidate=validateCandidate(b.candidate);
+        if(!candidate||typeof b.title!=="string"||!["Voie scolaire","Apprentissage"].includes(b.way)||typeof b.date!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(b.date))return json({error:"invalid_input"},400);
+        if(b.date<=cutoff())return json({error:"deadline"},409);
+        const [classes,slots,rows]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields),g.read("Reservations",["DisponibiliteID","Statut"])]);
+        const eligible=classes.filter(c=>c.Actif===true&&c.Voie===b.way&&c.Intitule===b.title);
+        const choices=slots.filter(s=>s.Ouvert===true&&s.DateImmersion===b.date&&eligible.some(c=>c.FormationID===s.FormationID)&&Number.isInteger(s.Capacite)&&remaining(s,rows)>0).sort((a,b)=>remaining(b,rows)-remaining(a,rows)||String(a.FormationID).localeCompare(String(b.FormationID)));
+        if(!choices.length)return json({error:"full_or_closed"},409);
+        const slot=choices[0],cls=eligible.find(c=>c.FormationID===slot.FormationID);
+        return json({status:"ok",preview:true,saved:false,classe:cls.Niveau,formation:cls.Intitule,date:slot.DateImmersion,remaining:remaining(slot,rows)});
+      }catch(e){return json({error:e?.message==="conflict"?"conflict":"operation_failed"},e?.message==="conflict"?409:502);}
     }
     if(url.pathname === "/admin/change") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
@@ -296,7 +320,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.6.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
