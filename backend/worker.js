@@ -8,7 +8,7 @@ let keysCache=null, keysUntil=0;
 async function keys(force=false){
   if(!force&&keysCache&&Date.now()<keysUntil)return keysCache;
   const response=await fetch("https://login.microsoftonline.com/"+TENANT+"/discovery/v2.0/keys",{redirect:"error"});
-  if(!response.ok)throw Error("keys");
+  if(!response.ok)throw Error("jwks_http_"+response.status);
   const data=await response.json();if(!Array.isArray(data.keys))throw Error("keys");
   keysCache=data.keys;keysUntil=Date.now()+3600000;return keysCache;
 }
@@ -16,6 +16,7 @@ async function authorize(request){
   const deny=reason=>{console.warn("admin_auth_rejected",reason);return 401;};
   const value=request.headers.get("Authorization")||"";
   if(!value.startsWith("Bearer ")||value.length>20000)return deny("bearer");
+  let stage="decode";
   try{
     const parts=value.slice(7).split(".");if(parts.length!==3)return deny("format");
     const h=object(parts[0]), p=object(parts[1]);
@@ -29,13 +30,21 @@ async function authorize(request){
     if(typeof p.oid!=="string")return deny("identity");
     if(!Number.isFinite(p.exp)||!Number.isFinite(p.nbf)||p.exp<=now||p.nbf>now+60)return deny("validity");
     const match=k=>k.kid===h.kid&&k.kty==="RSA"&&(!k.use||k.use==="sig");
+    stage="jwks_fetch";
     let jwk=(await keys()).find(match);if(!jwk)jwk=(await keys(true)).find(match);if(!jwk)return deny("signing_key");
+    stage="jwks_issuer";
     if(jwk.issuer&&jwk.issuer.replace("{tenantid}",TENANT)!==issuer)return deny("key_issuer");
+    stage="key_import";
     const key=await crypto.subtle.importKey("jwk",{kty:"RSA",n:jwk.n,e:jwk.e,alg:"RS256",ext:true},{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
+    stage="signature_verify";
     if(!await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,decode(parts[2]),new TextEncoder().encode(parts[0]+"."+parts[1])))return deny("signature");
     if(typeof p.scp!=="string"||!p.scp.split(" ").includes("access_as_user")||!Array.isArray(p.roles)||!p.roles.includes("Immersions.Admin"))return 403;
     return 200;
-  }catch{return deny("verification_exception");}
+  }catch(e){
+    const type=["TypeError","DataError","OperationError","NotSupportedError","InvalidAccessError","SyntaxError","Error"].includes(e?.name)?e.name:"UnknownError";
+    const code=/^jwks_http_[0-9]{3}$/.test(e?.message||"")?e.message:"";
+    return deny("verification_exception_"+stage+"_"+type+(code?"_"+code:""));
+  }
 }
 export default {
   async fetch(request, env) {
@@ -166,7 +175,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.2",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
