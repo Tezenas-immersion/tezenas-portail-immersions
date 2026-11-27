@@ -1,3 +1,4 @@
+import { generateRecipe, downloadRecipe } from "./conventions.js";
 const CLASS_SEED=[["CG1","CG 1","BTS Comptabilité et Gestion","2026-12-10 2027-01-07 2027-01-14 2027-01-21 2027-01-28 2027-02-04 2027-02-11 2027-02-18 2027-02-25 2027-03-04 2027-03-11"],["SAM1","SAM 1","BTS AMRH (ex-SAM)","2026-12-11 2026-12-18 2027-01-08 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["MCO1","MCO 1","BTS MCO","2026-12-15 2027-01-05 2027-01-12 2027-02-02 2027-02-09 2027-02-16 2027-02-23 2027-03-02 2027-03-09"],["NDRC1","NDRC 1","BTS NDRC","2027-01-06 2027-01-13 2027-01-20 2027-02-03 2027-02-10 2027-02-17 2027-02-24 2027-03-03 2027-03-10"],["TOA1","TOA 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["TOB1","TOB 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"]];
 const LIST_IDS={Formations:"76ea6394-cee3-405d-b67c-92fcfbb0c718",Disponibilites:"b92a4618-af9f-4e19-aae9-d68f8b0730f9",Reservations:"9da020ad-1265-43bd-b611-6e8c209908a4"};
 async function businessGraph(env){
@@ -115,6 +116,39 @@ const handler = {
         const allowed=new Set(active.map(c=>c.FormationID));
         return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite,remaining:remaining(s,rows)}))});
       }catch{return json({error:"planning_unavailable"},502);}
+    }
+    if(["/admin/candidate","/admin/convention-generate","/admin/convention-download"].includes(url.pathname)){
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
+      const generate=url.pathname==="/admin/convention-generate";
+      if(request.method!==(generate?"POST":"GET"))return json({error:"method_not_allowed"},405);
+      try{
+        let id=url.searchParams.get("id");
+        if(generate){const raw=await request.text();if(raw.length>500)return json({error:"invalid_input"},400);let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}id=b?.id;}
+        if(typeof id!=="string"||!id||id.length>100)return json({error:"invalid_input"},400);
+        const g=await businessGraph(env);
+        const rows=await g.read("Reservations",bookingFields);
+        const row=rows.find(x=>x.ReservationID===id&&!isRecipe(x));if(!row)return json({error:"not_found"},404);
+        if(url.pathname==="/admin/candidate"){
+          const fields=bookingFields.filter(x=>!["PlaceUnique","DemandeUnique","ConventionID"].includes(x));
+          return json({status:"ok",candidate:Object.fromEntries(fields.map(k=>[k,row[k]??null]))});
+        }
+        if(generate){
+          if(cancelled(row))return json({error:"reservation_cancelled"},409);
+          if(row.Statut!=="Test"||row.VersionAcceptation!=="RECETTE-V08"||row.Voie!=="Voie scolaire")return json({error:"recipe_only"},403);
+          if(row.ConventionID&&row.StatutConvention==="Recette generee")return json({status:"ok",already:true,generated:true});
+          const saved=await generateRecipe(env,g,row);
+          await g.patch("Reservations",row,{ConventionID:saved.id,StatutConvention:"Recette generee"});
+          return json({status:"ok",generated:true,filename:saved.filename,mailSent:false});
+        }
+        const {pdf,filename}=await downloadRecipe(env,g,row);
+        const downloadHeaders=new Headers(headers);downloadHeaders.set("Content-Type","application/pdf");downloadHeaders.set("Content-Disposition",'attachment; filename="'+filename+'"');
+        return new Response(pdf,{status:200,headers:downloadHeaders});
+      }catch(e){
+        const detail=String(e?.message||"");
+        const safe=/^(template_(integrity|zip|fields|size|redirect|http_\d{3})|conversion_(size|redirect|http_\d{3}|not_pdf)|upload_(http_\d{3}|id)|download_(size|redirect|http_\d{3}|not_pdf)|date_invalid|recipe_only|not_generated|graph_read|graph_write|graph_token|conflict|missing_version)$/.test(detail)?detail:"convention_failed";
+        return json({error:safe},safe==="conflict"?409:safe==="not_generated"?404:502);
+      }
     }
     if(url.pathname === "/admin/booking-create"){
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
@@ -380,7 +414,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.8.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
@@ -396,7 +430,7 @@ export class MutationGate {
 export default {
   async fetch(request,env){
     const url=new URL(request.url);
-    const write=request.method==="POST"&&["/admin/change","/admin/reservation-change","/admin/booking-create"].includes(url.pathname);
+    const write=request.method==="POST"&&["/admin/change","/admin/reservation-change","/admin/booking-create","/admin/convention-generate"].includes(url.pathname);
     if(request.method==="POST"&&url.pathname==="/diagnostic/graph"&&(url.searchParams.has("importClass")||url.searchParams.has("init")))return new Response(JSON.stringify({error:"bootstrap_disabled"}),{status:403,headers:{"Content-Type":"application/json"}});
     if(write){
       if(!env.MUTATION_GATE)return new Response(JSON.stringify({error:"mutation_gate_unavailable"}),{status:503,headers:{"Content-Type":"application/json","Access-Control-Allow-Origin":"https://tezenas-immersion.github.io"}});
