@@ -146,7 +146,7 @@ const handler = {
         return new Response(pdf,{status:200,headers:downloadHeaders});
       }catch(e){
         const detail=String(e?.message||"");
-        const safe=/^(template_(integrity|zip|fields|fill_exception|size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3})|conversion_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|upload_(http_\d{3}|id|json|pdf_fetch|docx_fetch)|download_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|date_invalid|recipe_only|not_generated|graph_read|graph_write|graph_token|conflict|missing_version)$/.test(detail)?detail:"convention_failed";
+        const safe=/^(template_(integrity|integrity_\d+_[a-f0-9]{64}_(zip|nonzip)|zip|fields|fill_exception|size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3})|conversion_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|upload_(http_\d{3}|id|json|pdf_fetch|docx_fetch)|download_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|date_invalid|recipe_only|not_generated|graph_read|graph_write|graph_token|conflict|missing_version)$/.test(detail)?detail:"convention_failed";
         return json({error:safe},safe==="conflict"?409:safe==="not_generated"?404:502);
       }
     }
@@ -414,7 +414,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.2",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
