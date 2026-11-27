@@ -62,6 +62,10 @@ async function readBytes(url,token,stage){
 }
 const idOK=id=>typeof id==="string"&&/^TEST-V08-[a-f0-9-]{36}$/.test(id);
 const name=(id,ext)=>"RECETTE-"+id+"."+ext;
+const friendlyName=row=>{
+ const clean=(v,n)=>String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-zA-Z0-9-]+/g,"_").replace(/^_+|_+$/g,"").slice(0,n)||"Inconnu";
+ return "RECETTE_Convention_"+clean(row.Nom,35).toUpperCase()+"_"+clean(row.Prenom,25)+"_"+clean(String(row.IntituleFormation||"").replace(/^BTS\s+/i,""),35)+"_"+clean(row.DateImmersion,10)+".pdf";
+};
 const path=(env,folder,filename)=>base(env)+"/root:/"+folder+"/"+encodeURIComponent(filename)+":/content";
 async function upload(env,token,filename,bytes,contentType){
  let r;try{r=await fetch(path(env,"Conventions",filename),{method:"PUT",headers:{...headers(token),"Content-Type":contentType},body:bytes,redirect:"manual"});}catch{throw Error("upload_"+(filename.endsWith(".pdf")?"pdf":"docx")+"_fetch");}
@@ -80,11 +84,11 @@ export async function generateRecipe(env,g,row){
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(doc.id)+"/content?format=pdf",g.token,"conversion");
  if(new TextDecoder().decode(new Uint8Array(pdf,0,Math.min(5,pdf.byteLength)))!=="%PDF-")throw Error("conversion_not_pdf");
  const saved=await upload(env,g.token,name(row.ReservationID,"pdf"),pdf,"application/pdf");
- return {id:saved.id,filename:name(row.ReservationID,"pdf")};
+ return {id:saved.id,filename:friendlyName(row)};
 }
 export async function downloadRecipe(env,g,row){
  if(!idOK(row.ReservationID)||row.VersionAcceptation!=="RECETTE-V08"||!row.ConventionID||!["Recette generee","Recette PDF accepte Graph","Recette PDF envoi incertain","Recette PDF echec"].includes(row.StatutConvention))throw Error("not_generated");
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(row.ConventionID)+"/content",g.token,"download");
  if(new TextDecoder().decode(new Uint8Array(pdf,0,Math.min(5,pdf.byteLength)))!=="%PDF-")throw Error("download_not_pdf");
- return {pdf,filename:name(row.ReservationID,"pdf")};
+ return {pdf,filename:friendlyName(row)};
 }
