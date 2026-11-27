@@ -93,7 +93,28 @@ async function showPlanning(token){
          const tr=el("tr");
          for(const t of [r.prenom+" "+r.nom,r.formation+" / "+r.classe,r.date,r.statut,r.convention||"—",r.mail||"—"])tr.append(el("td",t));
          const td=el("td"),cancel=btn("Annuler",async()=>{if(busy||!confirm("Annuler cette réservation et libérer la place ?"))return;busy=true;try{await call("/admin/reservation-change",{action:"cancel",id:r.id,etag:r.etag});feedback.textContent="Réservation annulée.";render();}catch(e){feedback.textContent=e.message;}finally{busy=false;}});
-         cancel.disabled=["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());td.append(cancel);tr.append(td);table.append(tr);
+         cancel.disabled=["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());td.append(cancel);
+         const details=btn("Fiche candidat",async()=>{if(busy)return;busy=true;try{
+           const d=await call("/admin/candidate?id="+encodeURIComponent(r.id));editor.replaceChildren(el("h3","Fiche candidat — "+r.prenom+" "+r.nom));
+           for(const [k,v] of Object.entries(d.candidate))editor.append(el("p",k+" : "+(v??"—")));
+           editor.scrollIntoView({block:"nearest"});
+         }catch(e){feedback.textContent=e.message;}finally{busy=false;}});
+         td.append(details);
+         if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"){
+           const generate=btn("Générer la convention",async()=>{if(busy||!confirm("Générer la convention non signée de recette dans SharePoint ? Aucun mail ne sera envoyé."))return;busy=true;generate.disabled=true;feedback.textContent="Génération Word et PDF en cours…";
+             try{const res=await fetch(endpoint+"/admin/convention-generate",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({id:r.id}),cache:"no-store"});const d=await res.json();if(!res.ok)throw Error(d.error||res.status);feedback.textContent="Convention de recette générée et enregistrée dans SharePoint.";render();}
+             catch(e){feedback.textContent="Génération : "+e.message;}finally{busy=false;generate.disabled=false;}
+           });td.append(generate);
+         }
+         if(r.convention==="Recette generee"){
+           const download=btn("Télécharger PDF",async()=>{if(busy)return;busy=true;try{
+             const res=await fetch(endpoint+"/admin/convention-download?id="+encodeURIComponent(r.id),{headers:{Authorization:"Bearer "+token},cache:"no-store"});
+             if(!res.ok){const d=await res.json();throw Error(d.error||res.status);}
+             const blob=await res.blob();if(blob.type!=="application/pdf")throw Error("Format inattendu");
+             const url=URL.createObjectURL(blob);const a=el("a");a.href=url;a.download="RECETTE-"+r.id+".pdf";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+           }catch(e){feedback.textContent=e.message;}finally{busy=false;}});td.append(download);
+         }
+         tr.append(td);table.append(tr);
        }
        if(d.rows.length){wrap.append(table);area.append(wrap);}
        area.append(el("p",d.recipeCount+" ligne(s) de recette V0.6 exclue(s)."));
