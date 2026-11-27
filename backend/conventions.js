@@ -83,7 +83,7 @@ export async function generateRecipe(env,g,row){
  return {id:saved.id,filename:name(row.ReservationID,"pdf")};
 }
 export async function downloadRecipe(env,g,row){
- if(!idOK(row.ReservationID)||row.VersionAcceptation!=="RECETTE-V08"||!row.ConventionID||row.StatutConvention!=="Recette generee")throw Error("not_generated");
+ if(!idOK(row.ReservationID)||row.VersionAcceptation!=="RECETTE-V08"||!row.ConventionID||!["Recette generee","Recette PDF accepte Graph","Recette PDF envoi incertain","Recette PDF echec"].includes(row.StatutConvention))throw Error("not_generated");
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(row.ConventionID)+"/content",g.token,"download");
  if(new TextDecoder().decode(new Uint8Array(pdf,0,Math.min(5,pdf.byteLength)))!=="%PDF-")throw Error("download_not_pdf");
  return {pdf,filename:name(row.ReservationID,"pdf")};
