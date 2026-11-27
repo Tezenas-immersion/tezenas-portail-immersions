@@ -7,7 +7,7 @@ function object(s){return JSON.parse(new TextDecoder().decode(decode(s)));}
 let keysCache=null, keysUntil=0;
 async function keys(force=false){
   if(!force&&keysCache&&Date.now()<keysUntil)return keysCache;
-  const response=await fetch("https://login.microsoftonline.com/"+TENANT+"/discovery/v2.0/keys",{redirect:"error"});
+  const response=await fetch("https://login.microsoftonline.com/"+TENANT+"/discovery/v2.0/keys",{redirect:"manual"});
   if(!response.ok)throw Error("jwks_http_"+response.status);
   const data=await response.json();if(!Array.isArray(data.keys))throw Error("keys");
   keysCache=data.keys;keysUntil=Date.now()+3600000;return keysCache;
@@ -175,7 +175,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.2",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.3",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
