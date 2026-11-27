@@ -10,7 +10,7 @@ function concat(parts){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0
 export async function fillStoredDocx(input,values){
  const bytes=new Uint8Array(input);
  const hash=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),b=>b.toString(16).padStart(2,"0")).join("");
- if(hash!==HASH)throw Error("template_integrity");
+ if(hash!==HASH)throw Error("template_integrity_"+bytes.length+"_"+hash+"_"+(bytes[0]===80&&bytes[1]===75?"zip":"nonzip"));
  const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),entries=[];
  let p=0,filled=0;
  while(p+30<=bytes.length&&v.getUint32(p,true)===0x04034b50){
@@ -45,14 +45,14 @@ function base(env){return "https://graph.microsoft.com/v1.0/sites/"+encodeURICom
 const headers=token=>({Authorization:"Bearer "+token});
 async function readBytes(url,token,stage){
  let r;
- try{r=await fetch(url,{headers:headers(token),redirect:"manual"});}catch{throw Error(stage+"_graph_fetch");}
+ try{r=await fetch(url,{headers:{...headers(token),"Accept":"application/octet-stream","Cache-Control":"no-cache"},redirect:"manual"});}catch{throw Error(stage+"_graph_fetch");}
  for(let n=0;[301,302,303,307,308].includes(r.status);n++){
    if(n>=5)throw Error(stage+"_redirect_limit");
    const loc=r.headers.get("Location");let target;
    try{target=new URL(loc,url);}catch{throw Error(stage+"_redirect");}
    if(!loc||target.protocol!=="https:"||target.username||target.password)throw Error(stage+"_redirect");
    // Graph supplies a preauthenticated URL. Never forward its bearer token.
-   try{r=await fetch(target.toString(),{redirect:"manual"});}catch{throw Error(stage+"_redirect_fetch");}
+   try{r=await fetch(target.toString(),{headers:{"Accept":"application/octet-stream","Cache-Control":"no-cache"},redirect:"manual"});}catch{throw Error(stage+"_redirect_fetch");}
    url=target.toString();
  }
  if(!r.ok)throw Error(stage+"_http_"+r.status);
@@ -75,7 +75,7 @@ export async function generateRecipe(env,g,row){
  values.DateNaissance=formatDate(row.DateNaissance);values.DateImmersion=formatDate(row.DateImmersion);
  values.DateRedaction=new Intl.DateTimeFormat("fr-FR",{timeZone:"Europe/Paris",day:"numeric",month:"long",year:"numeric"}).format(new Date());
  const template=await readBytes(path(env,"Modeles","Convention-Initial-Modele-Recette.docx"),g.token,"template");
- let docx;try{docx=await fillStoredDocx(template,values);}catch(e){if(/^template_(integrity|zip|fields)$/.test(e?.message||""))throw e;throw Error("template_fill_exception");}
+ let docx;try{docx=await fillStoredDocx(template,values);}catch(e){if(/^template_(integrity_\d+_[a-f0-9]{64}_(zip|nonzip)|zip|fields)$/.test(e?.message||""))throw e;throw Error("template_fill_exception");}
  const doc=await upload(env,g.token,name(row.ReservationID,"docx"),docx,"application/vnd.openxmlformats-officedocument.wordprocessingml.document");
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(doc.id)+"/content?format=pdf",g.token,"conversion");
  if(new TextDecoder().decode(new Uint8Array(pdf,0,Math.min(5,pdf.byteLength)))!=="%PDF-")throw Error("conversion_not_pdf");
