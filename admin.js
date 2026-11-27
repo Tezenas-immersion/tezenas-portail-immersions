@@ -56,7 +56,7 @@ async function showPlanning(token){
  async function load(){
    const old=select.value;data=await call("/admin/planning");
    if(!Array.isArray(data.classes)||!Array.isArray(data.slots))throw Error("Planning invalide.");
-   data.classes.sort((a,b)=>a.Ordre-b.Ordre); bookingCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;})); if(typeof previewCourse!=="undefined"){previewCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));}
+   data.classes.sort((a,b)=>a.Ordre-b.Ordre); const previousConcurrency=concurrencyCourse.value;concurrencyCourse.replaceChildren(...data.classes.filter(c=>c.Actif&&c.Voie==="Voie scolaire").map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));if(data.classes.some(c=>c.FormationID===previousConcurrency))concurrencyCourse.value=previousConcurrency; bookingCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;})); if(typeof previewCourse!=="undefined"){previewCourse.replaceChildren(...data.classes.filter(c=>c.Actif).map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule);o.value=c.FormationID;return o;}));}
    select.replaceChildren(...data.classes.map(c=>{const o=el("option",c.Niveau+" — "+c.Intitule+" · "+c.Voie+(c.Actif?"":" (inactive)"));o.value=c.FormationID;return o;}));
    if(data.classes.some(c=>c.FormationID===old))select.value=old;
    summary.textContent=data.classes.length+" classes · "+data.slots.length+" journées enregistrées · "+data.slots.filter(s=>s.Ouvert).reduce((n,s)=>n+Number(s.Capacite),0)+" places prévues";
@@ -100,7 +100,7 @@ async function showPlanning(token){
            editor.scrollIntoView({block:"nearest"});
          }catch(e){feedback.textContent=e.message;}finally{busy=false;}});
          td.append(details);
-         if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"){
+         if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"&&r.convention!=="Non applicable"){
            const generate=btn("Générer la convention",async()=>{if(busy||!confirm("Générer la convention non signée de recette dans SharePoint ? Aucun mail ne sera envoyé."))return;busy=true;generate.disabled=true;generate.textContent="Génération en cours…";feedback.textContent="Génération Word et PDF en cours…";
              try{const res=await fetch(endpoint+"/admin/convention-generate",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({id:r.id}),cache:"no-store"});const d=await res.json();if(!res.ok)throw Error(d.error||res.status);feedback.textContent="Convention de recette générée et enregistrée dans SharePoint.";render();}
              catch(e){feedback.textContent="Génération : "+e.message;alert("Génération : "+e.message);}finally{busy=false;generate.disabled=false;generate.textContent="Générer la convention";}
@@ -188,6 +188,55 @@ async function showPlanning(token){
    finally{busy=false;createBooking.disabled=false;}
  });
  bookingBox.append(el("summary","Recette inscription V0.10"),el("p","Candidat fictif imposé par le serveur. Confirmation au destinataire choisi et convention Initial envoyée uniquement à Trustteam. Occupe une place : annulez après le test."),field("Formation",bookingCourse),field("Date",bookingDate),field("Adresse de réception du mail de recette",bookingEmail),createBooking,bookingOutput);panel.append(bookingBox);
+ const concurrencyBox=el("details"),concurrencyCourse=el("select"),concurrencyDate=inp("date",""),concurrencyOutput=el("pre");
+ let testIds=[];
+ const concurrencyButton=btn("Tester les réservations simultanées",async()=>{
+   if(busy||testIds.length)return;
+   const c=data.classes.find(x=>x.FormationID===concurrencyCourse.value);
+   if(!c||!concurrencyDate.value)return;
+   busy=true;concurrencyButton.disabled=true;concurrencyOutput.textContent="Contrôle des disponibilités…";
+   try{
+     const p=await fetch(endpoint+"/public/planning",{cache:"no-store"});
+     if(!p.ok)throw Error("Planning indisponible");
+     const d=await p.json(),ids=new Set(d.classes.filter(x=>x.title===c.Intitule).map(x=>x.id));
+     const free=d.slots.filter(x=>ids.has(x.classId)&&x.date===concurrencyDate.value).reduce((n,x)=>n+Number(x.remaining),0);
+     if(!Number.isInteger(free)||free<1||free>4)throw Error("Choisissez une journée Initial avec 1 à 4 places libres.");
+     if(!confirm("Envoyer "+(free+1)+" demandes simultanées pour "+free+" places libres ? Aucun mail ne sera envoyé. Les réservations fictives occuperont les places jusqu’à leur annulation."))return;
+     const payload={title:c.Intitule,way:c.Voie,date:concurrencyDate.value,capacityTest:true};
+     const keys=Array.from({length:free+1},()=>"v08-"+crypto.randomUUID().replaceAll("-",""));
+     async function attempt(requestId){
+       try{const res=await fetch(endpoint+"/admin/booking-create",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({...payload,requestId}),cache:"no-store"});const result=await res.json();return {http:res.status,requestId,...result};}
+       catch{return {http:0,requestId,error:"resultat_incertain"};}
+     }
+     const results=await Promise.all(keys.map(attempt));
+     testIds=results.filter(x=>x.http===201&&x.capacityTest===true&&x.id).map(x=>x.id);
+     const winner=results.find(x=>x.http===201);
+     const replay=winner?await attempt(winner.requestId):null;
+     const p2=await fetch(endpoint+"/public/planning",{cache:"no-store"});
+     let after=null;if(p2.ok){const d2=await p2.json();after=d2.slots.filter(x=>ids.has(x.classId)&&x.date===payload.date).reduce((n,x)=>n+Number(x.remaining),0);}
+     const accepted=results.filter(x=>x.http===201&&x.capacityTest===true).length,rejected=results.filter(x=>x.http===409&&x.error==="full_or_closed").length;
+     concurrencyOutput.textContent=JSON.stringify({resultat:accepted===free&&rejected===1&&replay?.replayed===true&&replay.id===winner.id&&after===0?"OK":"A VERIFIER",placesAvant:free,acceptes:accepted,refuses:rejected,placesApres:after,tentatives:results,repetition:replay},null,2);
+     if(results.some(x=>x.http===0||x.http>=500))concurrencyOutput.textContent+="\nVérifiez les lignes RECETTE CONCURRENCE dans Réservations : certaines écritures peuvent être incertaines.";
+   }catch(e){concurrencyOutput.textContent=e.message;}
+   finally{busy=false;concurrencyButton.disabled=testIds.length>0;}
+ });
+ const cleanup=btn("Annuler les réservations de ce test",async()=>{
+   if(busy||!testIds.length||!confirm("Libérer les places occupées par les réservations fictives de ce test ?"))return;
+   busy=true;cleanup.disabled=true;
+   try{
+     const d=await call("/admin/reservations");let n=0;
+     for(const id of [...testIds]){
+       const row=d.rows.find(x=>x.id===id&&x.nom==="RECETTE CONCURRENCE");
+       if(!row)continue;
+       await call("/admin/reservation-change",{action:"cancel",id,etag:row.etag});testIds=testIds.filter(x=>x!==id);n++;
+     }
+     concurrencyOutput.textContent+="\n"+n+" réservation(s) annulée(s). Vérifiez le retour des places sur le portail public.";
+     if(testIds.length)concurrencyOutput.textContent+="\nCertaines lignes restent à vérifier dans Réservations.";
+     mode="reservations";render();
+   }catch(e){concurrencyOutput.textContent+="\nNettoyage : "+e.message;}
+   finally{busy=false;cleanup.disabled=false;concurrencyButton.disabled=testIds.length>0;}
+ });
+ concurrencyBox.append(el("summary","Recette concurrence V0.11"),el("p","Test sur un vrai créneau Initial, sans mail ni convention. Les places doivent être libérées après le test."),field("Formation",concurrencyCourse),field("Date",concurrencyDate),concurrencyButton,cleanup,concurrencyOutput);panel.append(concurrencyBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
