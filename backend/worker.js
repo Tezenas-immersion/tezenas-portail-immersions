@@ -30,12 +30,23 @@ export default {
         const lists=await fetch(graph+"/lists?$select=id&$top=1",options);
         if(!lists.ok) return json({status:"error",step,http:lists.status},502);
         await lists.json();
-        return json({status:"ok",entra:true,sharepoint:true,lists:true,write_test:false});
+        if(url.searchParams.get("write") !== "1") return json({status:"ok",entra:true,sharepoint:true,lists:true,write_test:false});
+        step="write";
+        const name="diagnostic-"+crypto.randomUUID()+".txt";
+        const drive=graph+"/drive";
+        const file=await fetch(drive+"/root:/Modeles/"+name+":/content",{method:"PUT",headers:{...options.headers,"Content-Type":"text/plain"},body:"Test technique temporaire, sans donnees personnelles."});
+        if(!file.ok) return json({status:"error",step,http:file.status},502);
+        const item=await file.json();
+        if(!item.id) return json({status:"error",step:"cleanup",write_test:true},502);
+        step="cleanup";
+        const deleted=await fetch(drive+"/items/"+encodeURIComponent(item.id),{method:"DELETE",headers:options.headers});
+        if(!deleted.ok) return json({status:"error",step,http:deleted.status,write_test:true,cleanup:false},502);
+        return json({status:"ok",entra:true,sharepoint:true,lists:true,write_test:true,cleanup:true});
       } catch {return json({status:"error",step},502);}
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.2",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
