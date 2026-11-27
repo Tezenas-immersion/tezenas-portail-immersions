@@ -245,7 +245,7 @@ const handler = {
         if(url.pathname==="/admin/reservations"){
           if(request.method!=="GET")return json({error:"method_not_allowed"},405);
           const rows=await g.read("Reservations",bookingFields);
-          return json({status:"ok",rows:rows.filter(r=>!isRecipe(r)).map(r=>({id:r.ReservationID,nom:r.Nom,prenom:r.Prenom,formation:r.IntituleFormation,classe:r.FormationID,date:r.DateImmersion,statut:r.Statut,email:r.Email,convention:r.StatutConvention,mail:r.StatutMail,etag:r._etag})),recipeCount:rows.filter(isRecipe).length});
+          return json({status:"ok",rows:rows.filter(r=>!isRecipe(r)).map(r=>({id:r.ReservationID,nom:r.Nom,prenom:r.Prenom,formation:r.IntituleFormation,classe:r.FormationID,date:r.DateImmersion,statut:r.Statut,email:r.Email,convention:r.StatutConvention,mail:r.StatutMail,etag:r._etag,way:r.Voie,year:r.AnneeID,slot:r.DisponibiliteID,test:/^TEST-/.test(r.ReservationID)||String(r.VersionAcceptation||"").startsWith("RECETTE"),hasPdf:!!r.ConventionID})),recipeCount:rows.filter(isRecipe).length});
         }
         if(request.method!=="POST")return json({error:"method_not_allowed"},405);
         const raw=await request.text();if(raw.length>12000)return json({error:"invalid_input"},400);
@@ -459,7 +459,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.11.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.12.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
