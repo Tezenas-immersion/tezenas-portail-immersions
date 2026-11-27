@@ -11,5 +11,21 @@
       "enabled": true,
       "invocation_logs": false
     }
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MUTATION_GATE",
+        "class_name": "MutationGate"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v080",
+      "new_sqlite_classes": [
+        "MutationGate"
+      ]
+    }
+  ]
 }
