@@ -70,6 +70,18 @@ export default {
       headers.set("Access-Control-Allow-Headers","Authorization");
     }
     const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
+    if(url.pathname === "/public/planning") {
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="GET")return json({error:"method_not_allowed"},405);
+      try {
+        const g=await businessGraph(env);
+        const [classes,slots]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields)]);
+        const limit=cutoff();
+        const active=classes.filter(c=>c.Actif===true&&c.Voie==="Voie scolaire");
+        const allowed=new Set(active.map(c=>c.FormationID));
+        return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite}))});
+      }catch{return json({error:"planning_unavailable"},502);}
+    }
     if(url.pathname === "/admin/planning") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
       if(request.method!=="GET")return json({error:"method_not_allowed"},405);
@@ -210,7 +222,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.3.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.3.1",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
