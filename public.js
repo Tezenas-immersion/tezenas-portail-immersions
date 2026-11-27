@@ -24,8 +24,43 @@ function render(){
  }
  $("calendar").replaceChildren(...cells);
  $("selection").textContent=selected?course+" — "+fmt.format(new Date(selected+"T12:00:00Z"))+". Les inscriptions ne sont pas encore ouvertes.":"";
+ const formPanel=$("formPanel");
+ if(formPanel){
+   formPanel.hidden=!selected||way!=="Voie scolaire"||!slots.some(s=>ids.has(s.classId)&&s.date===selected);
+   $("bookingSummary").textContent=formPanel.hidden?"":course+" — "+fmt.format(new Date(selected+"T12:00:00Z"))+" — journée entière, horaires communiqués ultérieurement.";
+   $("preview").textContent="";
+ }
 }
 $("prev").onclick=()=>{view.setMonth(view.getMonth()-1);selected="";render();};
 $("next").onclick=()=>{view.setMonth(view.getMonth()+1);selected="";render();};
 render();
 (async()=>{try{const r=await fetch("https://tezenas-immersions-api.tezenas-immersion.workers.dev/public/planning",{cache:"no-store"});if(!r.ok)throw Error();const d=await r.json();if(!Array.isArray(d.classes)||!Array.isArray(d.slots))throw Error();classes=d.classes.sort((a,b)=>a.order-b.order);slots=d.slots;loaded=true;$("status").textContent="";render();}catch{$("status").textContent="Le planning est momentanément indisponible. Veuillez réessayer ultérieurement.";}})();
+
+const form=$("bookingForm");
+if(form){
+ const terminale=$("terminale"), birth=$("birth");
+ birth.max=iso(today.getFullYear(),today.getMonth(),today.getDate());
+ function sync(){
+   $("specialiteLabel").textContent=terminale.value==="Technologique"?"Série et option du bac":terminale.value==="Professionnelle"?"Spécialité professionnelle":"Spécialité(s) du bac";
+   $("preview").textContent="";
+ }
+ terminale.addEventListener("change",sync);
+ birth.addEventListener("change",()=>{
+   const d=birth.value;
+   if(!d)return;
+   const [y,m,day]=d.split("-").map(Number);
+   const age=today.getFullYear()-y-((today.getMonth()+1<m||(today.getMonth()+1===m&&today.getDate()<day))?1:0);
+   $("emailLabel").textContent=age<18?"Adresse mail des parents (élève mineur)":"Adresse mail de l’élève";
+ });
+ form.addEventListener("input",()=>{$("preview").textContent="";});
+ form.addEventListener("submit",e=>{
+   e.preventDefault();
+   if(!selected||$("formPanel").hidden||!form.reportValidity())return;
+   const data=Object.fromEntries(new FormData(form));
+   if(Object.entries(data).some(([k,v])=>k!=="Acceptation"&&!String(v).trim())){
+     $("preview").textContent="Veuillez compléter tous les champs obligatoires.";return;
+   }
+   $("preview").textContent="Formulaire de démonstration validé. Aucune réservation, donnée ou convention n’a été envoyée ou enregistrée.";
+ });
+ $("formFields").disabled=false;
+}
