@@ -94,7 +94,7 @@ export default {
         const raw=await request.text();if(raw.length>1000)return json({error:"invalid_input"},400);
         let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
         const to=typeof b?.email==="string"?b.email.trim().toLowerCase():"";
-        if(to.length>254||!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(groupetezenas\.org|tezenas\.org)$/.test(to))return json({error:"internal_address_required"},400);
+        if(to.length>254||(!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(groupetezenas\.org|tezenas\.org)$/.test(to)&&to!=="ludovic.lorito@trustteam.fr"))return json({error:"test_address_not_allowed"},400);
         const tokenResponse=await fetch("https://login.microsoftonline.com/"+encodeURIComponent(env.MS_TENANT_ID)+"/oauth2/v2.0/token",{method:"POST",body:new URLSearchParams({client_id:env.MS_CLIENT_ID,client_secret:env.MS_CLIENT_SECRET,scope:"https://graph.microsoft.com/.default",grant_type:"client_credentials"})});
         if(!tokenResponse.ok)return json({error:"graph_token",graphHttp:tokenResponse.status},502);
         const token=(await tokenResponse.json()).access_token;if(!token)return json({error:"graph_token"},502);
@@ -338,7 +338,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.2",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
