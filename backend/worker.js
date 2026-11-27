@@ -13,22 +13,29 @@ async function keys(force=false){
   keysCache=data.keys;keysUntil=Date.now()+3600000;return keysCache;
 }
 async function authorize(request){
+  const deny=reason=>{console.warn("admin_auth_rejected",reason);return 401;};
   const value=request.headers.get("Authorization")||"";
-  if(!value.startsWith("Bearer ")||value.length>20000)return 401;
+  if(!value.startsWith("Bearer ")||value.length>20000)return deny("bearer");
   try{
-    const parts=value.slice(7).split(".");if(parts.length!==3)return 401;
+    const parts=value.slice(7).split(".");if(parts.length!==3)return deny("format");
     const h=object(parts[0]), p=object(parts[1]);
-    if(h.alg!=="RS256"||typeof h.kid!=="string")return 401;
+    if(h.alg!=="RS256"||typeof h.kid!=="string")return deny("algorithm");
     const now=Math.floor(Date.now()/1000);
-    if(p.ver!=="2.0"||p.iss!==issuer||p.tid!==TENANT||p.aud!==API_ID||p.azp!==SPA_ID||typeof p.oid!=="string"||!Number.isFinite(p.exp)||!Number.isFinite(p.nbf)||p.exp<=now||p.nbf>now+60)return 401;
+    if(p.ver!=="2.0")return deny("token_version");
+    if(p.iss!==issuer)return deny("issuer");
+    if(p.tid!==TENANT)return deny("tenant");
+    if(p.aud!==API_ID)return deny("audience");
+    if(p.azp!==SPA_ID)return deny("client");
+    if(typeof p.oid!=="string")return deny("identity");
+    if(!Number.isFinite(p.exp)||!Number.isFinite(p.nbf)||p.exp<=now||p.nbf>now+60)return deny("validity");
     const match=k=>k.kid===h.kid&&k.kty==="RSA"&&(!k.use||k.use==="sig");
-    let jwk=(await keys()).find(match);if(!jwk)jwk=(await keys(true)).find(match);if(!jwk)return 401;
-    if(jwk.issuer&&jwk.issuer.replace("{tenantid}",TENANT)!==issuer)return 401;
+    let jwk=(await keys()).find(match);if(!jwk)jwk=(await keys(true)).find(match);if(!jwk)return deny("signing_key");
+    if(jwk.issuer&&jwk.issuer.replace("{tenantid}",TENANT)!==issuer)return deny("key_issuer");
     const key=await crypto.subtle.importKey("jwk",{kty:"RSA",n:jwk.n,e:jwk.e,alg:"RS256",ext:true},{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
-    if(!await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,decode(parts[2]),new TextEncoder().encode(parts[0]+"."+parts[1])))return 401;
+    if(!await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,decode(parts[2]),new TextEncoder().encode(parts[0]+"."+parts[1])))return deny("signature");
     if(typeof p.scp!=="string"||!p.scp.split(" ").includes("access_as_user")||!Array.isArray(p.roles)||!p.roles.includes("Immersions.Admin"))return 403;
     return 200;
-  }catch{return 401;}
+  }catch{return deny("verification_exception");}
 }
 export default {
   async fetch(request, env) {
@@ -159,7 +166,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.1",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
