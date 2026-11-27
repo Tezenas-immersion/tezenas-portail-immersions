@@ -30,6 +30,49 @@ export default {
         const lists=await fetch(graph+"/lists?$select=id&$top=1",options);
         if(!lists.ok) return json({status:"error",step,http:lists.status},502);
         await lists.json();
+        if(url.searchParams.get("init") === "1") {
+          // Explicit, protected bootstrap. Run once, without concurrent calls.
+          const ids={Parametres:"f3201118-d480-419d-8536-46fbaaac7577",AnneesScolaires:"12005aa7-5c1c-4d57-9b45-da37876baf46"};
+          const now=new Date();
+          const parts=new Intl.DateTimeFormat("fr-FR",{timeZone:"Europe/Paris",year:"numeric",month:"numeric"}).formatToParts(now);
+          const year=Number(parts.find(p=>p.type==="year").value)-(Number(parts.find(p=>p.type==="month").value)<9?1:0);
+          const yearId=year+"-"+(year+1);
+          const seeds=[
+            ["Parametres","Cle",[
+              {Title:"TitreAccueil",Cle:"TitreAccueil",Valeur:"Découvrez votre future formation",Description:"Titre public provisoire"},
+              {Title:"TexteAccueil",Cle:"TexteAccueil",Valeur:"Découvrez nos formations lors d'une journée d'immersion.",Description:"Présentation provisoire"},
+              {Title:"CapaciteDefaut",Cle:"CapaciteDefaut",Valeur:"2",Description:"Places par journée et formation (hypothèse à confirmer)"},
+              {Title:"DelaiMinimumJours",Cle:"DelaiMinimumJours",Valeur:"7",Description:"Délai minimum de réservation"},
+              {Title:"ReservationsActives",Cle:"ReservationsActives",Valeur:"false",Description:"Réservations réelles désactivées"},
+              {Title:"AnneeAutomatique",Cle:"AnneeAutomatique",Valeur:"true",Description:"Basculement au 1er septembre"}
+            ]],
+            ["AnneesScolaires","AnneeID",[{Title:yearId,AnneeID:yearId,DateDebut:year+"-09-01",DateFin:(year+1)+"-08-31",Actif:true}]]
+          ];
+          const results=[];
+          for(const [name,key,rows] of seeds){
+            const base=graph+"/lists/"+ids[name]+"/items";
+            step="init_read_"+name;
+            let next=base+"?$expand=fields($select="+key+")&$top=100";
+            const keys=new Set();
+            while(next){
+              if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("invalid pagination");
+              const response=await fetch(next,options);
+              if(!response.ok)return json({status:"error",step,http:response.status,results},502);
+              const data=await response.json();
+              for(const item of data.value||[])keys.add(item.fields?.[key]);
+              next=data["@odata.nextLink"];
+            }
+            const result={list:name,created:0,existing:0};results.push(result);
+            for(const fields of rows){
+              if(keys.has(fields[key])){result.existing++;continue;}
+              step="init_write_"+name;
+              const response=await fetch(base,{method:"POST",headers:{...options.headers,"Content-Type":"application/json"},body:JSON.stringify({fields})});
+              if(!response.ok)return json({status:"error",step,http:response.status,results},502);
+              await response.json();keys.add(fields[key]);result.created++;
+            }
+          }
+          return json({status:"ok",results,reservations:false});
+        }
         if(url.searchParams.get("schema") === "1") {
           const expected={Parametres:["Cle","Valeur","Description"],AnneesScolaires:["AnneeID","DateDebut","DateFin","Actif"],Formations:["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"],Disponibilites:["DisponibiliteID","FormationID","AnneeID","DateImmersion","HeureDebut","HeureFin","Capacite","Ouvert"],Reservations:["ReservationID","DisponibiliteID","FormationID","AnneeID","IntituleFormation","Voie","DateImmersion","Nom","Prenom","Email","Telephone","Etablissement","Statut","ConventionID","StatutConvention","StatutMail","DateReservation"],JournalActivite:["Action","Auteur","Cible","DateAction","Resultat"]};
           const found={};
@@ -76,7 +119,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.3",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.4",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
