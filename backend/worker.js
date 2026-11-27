@@ -82,6 +82,39 @@ export default {
         return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite}))});
       }catch{return json({error:"planning_unavailable"},502);}
     }
+    // Restricted synthetic-data test. No public write endpoint.
+    if(url.pathname === "/admin/booking-test") {
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+      const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
+      try{
+        const raw=await request.text();if(raw.length>2000)return json({error:"invalid_input"},400);
+        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        if(!b||typeof b.requestId!=="string"||!/^test-[a-f0-9]{32}$/.test(b.requestId))return json({error:"invalid_input"},400);
+        const g=await businessGraph(env);
+        const fields=["ReservationID","DisponibiliteID","Statut","PlaceUnique","DemandeUnique"];
+        const existing=await g.read("Reservations",fields);
+        const previous=existing.find(x=>x.DemandeUnique===b.requestId);
+        if(previous)return json({status:"ok",test:true,id:previous.ReservationID,replayed:true});
+        // Dedicated synthetic namespace, never consumes an actual class slot.
+        const used=new Set(existing.map(x=>x.PlaceUnique));
+        for(let i=1;i<=2;i++){
+          const place="RECETTE-V06-"+i;if(used.has(place))continue;
+          const id="TEST-"+crypto.randomUUID();
+          const now=new Date().toISOString();
+          try{
+            await g.add("Reservations",{Title:id,ReservationID:id,DisponibiliteID:"RECETTE-V06",FormationID:"RECETTE",AnneeID:"2026-2027",IntituleFormation:"TEST TECHNIQUE",Voie:"Voie scolaire",DateImmersion:"2027-01-15",Nom:"RECETTE",Prenom:"FICTIF",Email:"recette@example.invalid",Telephone:"0000000000",Etablissement:"LYCEE FICTIF",Statut:"Test",StatutConvention:"En attente",StatutMail:"En attente",DateReservation:now,Civilite:"Madame",DateNaissance:"2009-01-01",VilleResidence:"VILLE FICTIVE",CodePostalResidence:"42000",Terminale:"Générale",SpecialitesBac:"Test",AdresseEtablissement:"Adresse fictive",EmailEtablissement:"lycee@example.invalid",TelephoneEtablissement:"0000000000",CiviliteChef:"Monsieur",ChefEtablissement:"CHEF FICTIF",Acceptation:true,DateAcceptation:now,VersionAcceptation:"RECETTE-V06",PlaceUnique:place,DemandeUnique:b.requestId});
+            return json({status:"ok",test:true,id,replayed:false},201);
+          }catch{
+            const current=await g.read("Reservations",fields);
+            const duplicate=current.find(x=>x.DemandeUnique===b.requestId);
+            if(duplicate)return json({status:"ok",test:true,id:duplicate.ReservationID,replayed:true});
+            if(!current.some(x=>x.PlaceUnique===place))return json({error:"test_write_failed"},502);
+          }
+        }
+        return json({error:"full",test:true},409);
+      }catch{return json({error:"test_failed"},502);}
+    }
     if(url.pathname === "/admin/change") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
       if(request.method!=="POST")return json({error:"method_not_allowed"},405);
@@ -263,7 +296,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.4.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.6.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
