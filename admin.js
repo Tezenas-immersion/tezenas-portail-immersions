@@ -101,9 +101,9 @@ async function showPlanning(token){
          }catch(e){feedback.textContent=e.message;}finally{busy=false;}});
          td.append(details);
          if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"){
-           const generate=btn("Générer la convention",async()=>{if(busy||!confirm("Générer la convention non signée de recette dans SharePoint ? Aucun mail ne sera envoyé."))return;busy=true;generate.disabled=true;feedback.textContent="Génération Word et PDF en cours…";
+           const generate=btn("Générer la convention",async()=>{if(busy||!confirm("Générer la convention non signée de recette dans SharePoint ? Aucun mail ne sera envoyé."))return;busy=true;generate.disabled=true;generate.textContent="Génération en cours…";feedback.textContent="Génération Word et PDF en cours…";
              try{const res=await fetch(endpoint+"/admin/convention-generate",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({id:r.id}),cache:"no-store"});const d=await res.json();if(!res.ok)throw Error(d.error||res.status);feedback.textContent="Convention de recette générée et enregistrée dans SharePoint.";render();}
-             catch(e){feedback.textContent="Génération : "+e.message;}finally{busy=false;generate.disabled=false;}
+             catch(e){feedback.textContent="Génération : "+e.message;alert("Génération : "+e.message);}finally{busy=false;generate.disabled=false;generate.textContent="Générer la convention";}
            });td.append(generate);
          }
          if(r.convention==="Recette generee"){
