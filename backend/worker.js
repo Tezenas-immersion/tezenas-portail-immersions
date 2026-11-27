@@ -76,6 +76,38 @@ async function authorize(request){
     return deny("verification_exception_"+stage+"_"+type+(code?"_"+code:""));
   }
 }
+
+async function recipeConventionPipeline(env,g,id){
+ let row=(await g.read("Reservations",bookingFields)).find(x=>x.ReservationID===id);
+ if(!row||row.Statut!=="Test"||row.VersionAcceptation!=="RECETTE-V08"||row.Voie!=="Voie scolaire"||!/^TEST-V08-[a-f0-9-]{36}$/.test(id))throw Error("recipe_only");
+ if(!row.ConventionID){
+   const saved=await generateRecipe(env,g,row);
+   await g.patch("Reservations",row,{ConventionID:saved.id,StatutConvention:"Recette generee"});
+   row=(await g.read("Reservations",bookingFields)).find(x=>x.ReservationID===id);
+ }
+ if(!row)throw Error("graph_read");
+ if(["Recette PDF accepte Graph","Recette PDF envoi incertain"].includes(row.StatutConvention))return row.StatutConvention;
+ if(!["Recette generee","Recette PDF echec"].includes(row.StatutConvention))throw Error("convention_state");
+ const {pdf,filename}=await downloadRecipe(env,g,{...row,StatutConvention:"Recette generee"});
+ if(pdf.byteLength>2500000)throw Error("attachment_too_large");
+ let binary="";const bytes=new Uint8Array(pdf);
+ for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+ const contentBytes=btoa(binary);
+ // Persist an uncertain state BEFORE sending; never auto-retry an ambiguous submission.
+ await g.patch("Reservations",row,{StatutConvention:"Recette PDF envoi incertain"});
+ let status="Recette PDF envoi incertain";
+ try{
+   const response=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent("Tezenas-immersion@tezenas.org")+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+g.token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — convention Campus Initial",body:{contentType:"Text",content:"Bonjour,\n\nVoici la convention NON SIGNÉE d’une immersion fictive.\nFormation : "+row.IntituleFormation+"\nDate : "+row.DateImmersion+"\nRéférence : "+id+"\n\nSimulation de l’envoi à la vie scolaire. Aucun destinataire réel du service n’est sollicité.\n\nL’équipe Immers’Tez"},toRecipients:[{emailAddress:{address:"ludovic.lorito@trustteam.fr"}}],attachments:[{"@odata.type":"#microsoft.graph.fileAttachment",name:filename,contentType:"application/pdf",contentBytes}]},saveToSentItems:true})});
+   status=response.status===202?"Recette PDF accepte Graph":[400,401,403,404,413,415,429].includes(response.status)?"Recette PDF echec":"Recette PDF envoi incertain";
+ }catch{}
+ if(status!=="Recette PDF envoi incertain"){
+   const current=(await g.read("Reservations",bookingFields)).find(x=>x.ReservationID===id);
+   if(!current)throw Error("graph_read");
+   await g.patch("Reservations",current,{StatutConvention:status});
+ }
+ return status;
+}
+
 const handler = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -136,7 +168,7 @@ const handler = {
         if(generate){
           if(cancelled(row))return json({error:"reservation_cancelled"},409);
           if(row.Statut!=="Test"||row.VersionAcceptation!=="RECETTE-V08"||row.Voie!=="Voie scolaire")return json({error:"recipe_only"},403);
-          if(row.ConventionID&&row.StatutConvention==="Recette generee")return json({status:"ok",already:true,generated:true});
+          if(row.ConventionID&&["Recette generee","Recette PDF accepte Graph","Recette PDF envoi incertain","Recette PDF echec"].includes(row.StatutConvention))return json({status:"ok",already:true,generated:true});
           const saved=await generateRecipe(env,g,row);
           await g.patch("Reservations",row,{ConventionID:saved.id,StatutConvention:"Recette generee"});
           return json({status:"ok",generated:true,filename:saved.filename,mailSent:false});
@@ -149,6 +181,15 @@ const handler = {
         const safe=/^(template_(integrity|integrity_\d+_[a-f0-9]{64}_(zip|nonzip)|zip|fields|fill_exception|size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3})|conversion_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|upload_(http_\d{3}|id|json|pdf_fetch|docx_fetch)|download_(size|redirect|redirect_limit|redirect_fetch|graph_fetch|body|http_\d{3}|not_pdf)|date_invalid|recipe_only|not_generated|graph_read|graph_write|graph_token|conflict|missing_version)$/.test(detail)?detail:"convention_failed";
         return json({error:safe},safe==="conflict"?409:safe==="not_generated"?404:502);
       }
+    }
+    if(url.pathname === "/admin/convention-send-test"){
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+      const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
+      try{const raw=await request.text();if(raw.length>500)return json({error:"invalid_input"},400);let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        if(typeof b?.id!=="string"||!/^TEST-V08-[a-f0-9-]{36}$/.test(b.id))return json({error:"invalid_input"},400);
+        const g=await businessGraph(env);return json({status:"ok",convention:await recipeConventionPipeline(env,g,b.id)});
+      }catch(e){const msg=String(e?.message||"");return json({error:/^(recipe_only|convention_state|attachment_too_large|graph_read|graph_write|conflict|template_[a-z_0-9]+|conversion_[a-z_0-9]+|upload_[a-z_0-9]+|download_[a-z_0-9]+)$/.test(msg)?msg:"pipeline_failed"},502);}
     }
     if(url.pathname === "/admin/booking-create"){
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
@@ -182,11 +223,13 @@ const handler = {
             catch{return json({error:"write_uncertain",requestId:b.requestId},502);}
             let mail="Incertain";
             try{
-              const graph=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent("Tezenas-immersion@tezenas.org")+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+g.token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — confirmation de réservation",body:{contentType:"Text",content:"Bonjour,\n\nVotre réservation FICTIVE a été enregistrée pour tester Immers’Tez.\nFormation : "+cls.Intitule+"\nDate : "+slot.DateImmersion+"\nRéférence : "+id+"\n\nAucune inscription réelle ni convention n’est émise.\n\nL’équipe Immers’Tez"},toRecipients:[{emailAddress:{address:email}}]},saveToSentItems:true})});
+              const graph=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent("Tezenas-immersion@tezenas.org")+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+g.token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — confirmation de réservation",body:{contentType:"Text",content:"Bonjour,\n\nVotre réservation FICTIVE a été enregistrée pour tester Immers’Tez.\nFormation : "+cls.Intitule+"\nDate : "+slot.DateImmersion+"\nRéférence : "+id+"\n\nAucune inscription réelle n’est créée. La convention de recette est traitée séparément.\n\nL’équipe Immers’Tez"},toRecipients:[{emailAddress:{address:email}}]},saveToSentItems:true})});
               mail=graph.status===202?"Accepte Graph":graph.status>=500?"Incertain":"Echec";
             }catch{}
             try{const saved=(await g.read("Reservations",["ReservationID","StatutMail"])).find(x=>x.ReservationID===id);if(saved)await g.patch("Reservations",saved,{StatutMail:mail});else mail="Incertain";}catch{mail="Incertain";}
-            return json({status:"ok",saved:true,id,classe:cls.Niveau,mail,remaining:remaining(slot,rows)-1,test:true},201);
+            let convention=cls.Voie==="Voie scolaire"?"En attente":"Modele alternance indisponible";
+            if(cls.Voie==="Voie scolaire"){try{convention=await recipeConventionPipeline(env,g,id);}catch{convention="Echec ou etat a verifier dans Reservations";}}
+            return json({status:"ok",saved:true,id,classe:cls.Niveau,mail,convention,remaining:remaining(slot,rows)-1,test:true},201);
           }
         }
         return json({error:"full_or_closed"},409);
@@ -414,7 +457,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.9.3",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.10.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
@@ -430,7 +473,7 @@ export class MutationGate {
 export default {
   async fetch(request,env){
     const url=new URL(request.url);
-    const write=request.method==="POST"&&["/admin/change","/admin/reservation-change","/admin/booking-create","/admin/convention-generate"].includes(url.pathname);
+    const write=request.method==="POST"&&["/admin/change","/admin/reservation-change","/admin/booking-create","/admin/convention-generate","/admin/convention-send-test"].includes(url.pathname);
     if(request.method==="POST"&&url.pathname==="/diagnostic/graph"&&(url.searchParams.has("importClass")||url.searchParams.has("init")))return new Response(JSON.stringify({error:"bootstrap_disabled"}),{status:403,headers:{"Content-Type":"application/json"}});
     if(write){
       if(!env.MUTATION_GATE)return new Response(JSON.stringify({error:"mutation_gate_unavailable"}),{status:503,headers:{"Content-Type":"application/json","Access-Control-Allow-Origin":"https://tezenas-immersion.github.io"}});
