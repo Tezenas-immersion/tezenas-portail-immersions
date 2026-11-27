@@ -44,22 +44,29 @@ export async function fillStoredDocx(input,values){
 function base(env){return "https://graph.microsoft.com/v1.0/sites/"+encodeURIComponent(env.SP_SITE_ID)+"/drive";}
 const headers=token=>({Authorization:"Bearer "+token});
 async function readBytes(url,token,stage){
- let r=await fetch(url,{headers:headers(token),redirect:"manual"});
- if([301,302,303,307,308].includes(r.status)){
-   const loc=r.headers.get("Location");if(!loc||new URL(loc).protocol!=="https:")throw Error(stage+"_redirect");
-   r=await fetch(loc,{redirect:"error"}); // preauthenticated URL; never forward bearer
+ let r;
+ try{r=await fetch(url,{headers:headers(token),redirect:"manual"});}catch{throw Error(stage+"_graph_fetch");}
+ for(let n=0;[301,302,303,307,308].includes(r.status);n++){
+   if(n>=5)throw Error(stage+"_redirect_limit");
+   const loc=r.headers.get("Location");let target;
+   try{target=new URL(loc,url);}catch{throw Error(stage+"_redirect");}
+   if(!loc||target.protocol!=="https:"||target.username||target.password)throw Error(stage+"_redirect");
+   // Graph supplies a preauthenticated URL. Never forward its bearer token.
+   try{r=await fetch(target.toString(),{redirect:"manual"});}catch{throw Error(stage+"_redirect_fetch");}
+   url=target.toString();
  }
  if(!r.ok)throw Error(stage+"_http_"+r.status);
- const b=await r.arrayBuffer();if(b.byteLength===0||b.byteLength>10000000)throw Error(stage+"_size");
- return b;
+ let bytes;try{bytes=await r.arrayBuffer();}catch{throw Error(stage+"_body");}
+ if(bytes.byteLength===0||bytes.byteLength>10000000)throw Error(stage+"_size");
+ return bytes;
 }
 const idOK=id=>typeof id==="string"&&/^TEST-V08-[a-f0-9-]{36}$/.test(id);
 const name=(id,ext)=>"RECETTE-"+id+"."+ext;
 const path=(env,folder,filename)=>base(env)+"/root:/"+folder+"/"+encodeURIComponent(filename)+":/content";
 async function upload(env,token,filename,bytes,contentType){
- const r=await fetch(path(env,"Conventions",filename),{method:"PUT",headers:{...headers(token),"Content-Type":contentType},body:bytes,redirect:"error"});
+ let r;try{r=await fetch(path(env,"Conventions",filename),{method:"PUT",headers:{...headers(token),"Content-Type":contentType},body:bytes,redirect:"manual"});}catch{throw Error("upload_"+(filename.endsWith(".pdf")?"pdf":"docx")+"_fetch");}
  if(!r.ok)throw Error("upload_http_"+r.status);
- const item=await r.json();if(typeof item.id!=="string"||!item.id)throw Error("upload_id");return item;
+ let item;try{item=await r.json();}catch{throw Error("upload_json");}if(typeof item.id!=="string"||!item.id)throw Error("upload_id");return item;
 }
 const formatDate=d=>{if(typeof d!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(d))throw Error("date_invalid");return d.split("-").reverse().join("/");};
 export async function generateRecipe(env,g,row){
@@ -68,7 +75,7 @@ export async function generateRecipe(env,g,row){
  values.DateNaissance=formatDate(row.DateNaissance);values.DateImmersion=formatDate(row.DateImmersion);
  values.DateRedaction=new Intl.DateTimeFormat("fr-FR",{timeZone:"Europe/Paris",day:"numeric",month:"long",year:"numeric"}).format(new Date());
  const template=await readBytes(path(env,"Modeles","Convention-Initial-Modele-Recette.docx"),g.token,"template");
- const docx=await fillStoredDocx(template,values);
+ let docx;try{docx=await fillStoredDocx(template,values);}catch(e){if(/^template_(integrity|zip|fields)$/.test(e?.message||""))throw e;throw Error("template_fill_exception");}
  const doc=await upload(env,g.token,name(row.ReservationID,"docx"),docx,"application/vnd.openxmlformats-officedocument.wordprocessingml.document");
  const pdf=await readBytes(base(env)+"/items/"+encodeURIComponent(doc.id)+"/content?format=pdf",g.token,"conversion");
  if(new TextDecoder().decode(new Uint8Array(pdf,0,Math.min(5,pdf.byteLength)))!=="%PDF-")throw Error("conversion_not_pdf");
