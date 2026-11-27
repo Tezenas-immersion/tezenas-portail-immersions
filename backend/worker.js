@@ -86,6 +86,24 @@ export default {
       headers.set("Access-Control-Allow-Headers","Authorization, Content-Type");
     }
     const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
+    if(url.pathname === "/admin/mail-test"){
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+      const auth=await authorize(request);if(auth!==200)return json({error:auth===403?"forbidden":"unauthorized"},auth);
+      try{
+        const raw=await request.text();if(raw.length>1000)return json({error:"invalid_input"},400);
+        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        const to=typeof b?.email==="string"?b.email.trim().toLowerCase():"";
+        if(to.length>254||!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(groupetezenas\.org|tezenas\.org)$/.test(to))return json({error:"internal_address_required"},400);
+        const tokenResponse=await fetch("https://login.microsoftonline.com/"+encodeURIComponent(env.MS_TENANT_ID)+"/oauth2/v2.0/token",{method:"POST",body:new URLSearchParams({client_id:env.MS_CLIENT_ID,client_secret:env.MS_CLIENT_SECRET,scope:"https://graph.microsoft.com/.default",grant_type:"client_credentials"})});
+        if(!tokenResponse.ok)return json({error:"graph_token",graphHttp:tokenResponse.status},502);
+        const token=(await tokenResponse.json()).access_token;if(!token)return json({error:"graph_token"},502);
+        const sender="Tezenas-immersion@tezenas.org";
+        const result=await fetch("https://graph.microsoft.com/v1.0/users/"+encodeURIComponent(sender)+"/sendMail",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({message:{subject:"[RECETTE] Immers’Tez — confirmation de test",body:{contentType:"Text",content:"Bonjour,\n\nCeci est un test technique du portail Immers’Tez. Aucune inscription réelle n’a été créée.\n\nExemple : BTS Tourisme — journée entière, horaires à confirmer.\n\nL’équipe Immers’Tez\nGroupe Tézenas du Montcel"},toRecipients:[{emailAddress:{address:to}}]},saveToSentItems:true})});
+        if(result.status!==202)return json({error:result.status===403?"mail_permission_denied":"mail_send_failed",graphHttp:result.status},502);
+        return json({status:"accepted",graphHttp:202,sender,recipient:to,test:true,reservationCreated:false},202);
+      }catch{return json({error:"mail_test_failed"},502);}
+    }
     if(url.pathname === "/public/planning") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
       if(request.method!=="GET")return json({error:"method_not_allowed"},405);
@@ -320,7 +338,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.7.1",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
