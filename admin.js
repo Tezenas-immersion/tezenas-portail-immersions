@@ -111,7 +111,7 @@ async function showPlanning(token){
              const res=await fetch(endpoint+"/admin/convention-download?id="+encodeURIComponent(r.id),{headers:{Authorization:"Bearer "+token},cache:"no-store"});
              if(!res.ok){const d=await res.json();throw Error(d.error||res.status);}
              const blob=await res.blob();if(blob.type!=="application/pdf")throw Error("Format inattendu");
-             const url=URL.createObjectURL(blob);const a=el("a");a.href=url;a.download="RECETTE-"+r.id+".pdf";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+             const url=URL.createObjectURL(blob);const a=el("a");a.href=url;a.download=res.headers.get("Content-Disposition")?.match(/filename="([A-Za-z0-9_.-]+)"/)?.[1]||"Convention.pdf";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
            }catch(e){feedback.textContent=e.message;}finally{busy=false;}});td.append(download);
          }
          if(r.id.startsWith("TEST-V08-")&&r.statut==="Test"&&["En attente","Recette generee","Recette PDF echec"].includes(r.convention)){
