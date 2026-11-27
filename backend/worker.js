@@ -174,7 +174,7 @@ const handler = {
           return json({status:"ok",generated:true,filename:saved.filename,mailSent:false});
         }
         const {pdf,filename}=await downloadRecipe(env,g,row);
-        const downloadHeaders=new Headers(headers);downloadHeaders.set("Content-Type","application/pdf");downloadHeaders.set("Content-Disposition",'attachment; filename="'+filename+'"');
+        const downloadHeaders=new Headers(headers);downloadHeaders.set("Content-Type","application/pdf");downloadHeaders.set("Access-Control-Expose-Headers","Content-Disposition");downloadHeaders.set("Content-Disposition",'attachment; filename="'+filename+'"');
         return new Response(pdf,{status:200,headers:downloadHeaders});
       }catch(e){
         const detail=String(e?.message||"");
@@ -457,7 +457,7 @@ const handler = {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.10.0",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.10.1",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
