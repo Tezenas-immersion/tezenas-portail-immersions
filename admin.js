@@ -125,6 +125,21 @@ async function showPlanning(token){
    try{previewResult.textContent=JSON.stringify(await call("/admin/booking-preview",{title:c.Intitule,way:c.Voie,date:previewDate.value,candidate}),null,2);}catch(e){previewResult.textContent=e.message;}
  }),previewResult);panel.append(previewBox);
 
+ const mailBox=el("details"),mailAddress=inp("email",""),mailOutput=el("p");
+ mailAddress.placeholder="prenom.nom@groupetezenas.org";mailAddress.maxLength=254;mailAddress.required=true;
+ const sendTest=btn("Envoyer un mail de test",async()=>{
+   if(busy)return;const email=mailAddress.value.trim();
+   if(!mailAddress.reportValidity()||!/@(groupetezenas\.org|tezenas\.org)$/i.test(email)){mailOutput.textContent="Saisissez une adresse professionnelle Tézenas.";return;}
+   if(!confirm("Envoyer un mail technique fictif à "+email+" ?"))return;
+   busy=true;sendTest.disabled=true;mailOutput.textContent="Envoi en cours…";
+   try{
+     const r=await fetch(endpoint+"/admin/mail-test",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({email}),cache:"no-store"});
+     const d=await r.json();
+     mailOutput.textContent=r.status===202&&d.status==="accepted"?"HTTP 202 — Microsoft Graph a accepté le message. Vérifiez sa réception et les éléments envoyés.":d.error==="mail_permission_denied"?"Graph HTTP 403 — autorisation refusée, vérifiez notamment la propagation RBAC.":"Échec : "+(d.error||r.status)+(d.graphHttp?" (Graph HTTP "+d.graphHttp+")":"");
+   }catch{mailOutput.textContent="Résultat incertain. Vérifiez la réception avant de relancer.";}
+   finally{busy=false;sendTest.disabled=false;}
+ });
+ mailOutput.setAttribute("role","status");mailBox.append(el("summary","Recette messagerie V0.7.1"),el("p","Envoi réel depuis la boîte Immers’Tez, uniquement vers une adresse interne. Aucun candidat ni réservation créé."),field("Adresse professionnelle destinataire",mailAddress),sendTest,mailOutput);panel.append(mailBox);
  select.onchange=render;feedback.setAttribute("role","status");panel.append(el("h2","Gestion des immersions"),el("p","Inscriptions publiques désactivées — capacités théoriques."),summary,tabs,select,nav,content,editor,feedback);
  try{await load();render();}catch(e){feedback.textContent=e.message;}
 }
