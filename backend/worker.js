@@ -1,3 +1,16 @@
+const CLASS_SEED=[["CG1","CG 1","BTS Comptabilité et Gestion","2026-12-10 2027-01-07 2027-01-14 2027-01-21 2027-01-28 2027-02-04 2027-02-11 2027-02-18 2027-02-25 2027-03-04 2027-03-11"],["SAM1","SAM 1","BTS AMRH (ex-SAM)","2026-12-11 2026-12-18 2027-01-08 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["MCO1","MCO 1","BTS MCO","2026-12-15 2027-01-05 2027-01-12 2027-02-02 2027-02-09 2027-02-16 2027-02-23 2027-03-02 2027-03-09"],["NDRC1","NDRC 1","BTS NDRC","2027-01-06 2027-01-13 2027-01-20 2027-02-03 2027-02-10 2027-02-17 2027-02-24 2027-03-03 2027-03-10"],["TOA1","TOA 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["TOB1","TOB 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"]];
+const LIST_IDS={Formations:"76ea6394-cee3-405d-b67c-92fcfbb0c718",Disponibilites:"b92a4618-af9f-4e19-aae9-d68f8b0730f9"};
+async function businessGraph(env){
+ const response=await fetch("https://login.microsoftonline.com/"+encodeURIComponent(env.MS_TENANT_ID)+"/oauth2/v2.0/token",{method:"POST",body:new URLSearchParams({client_id:env.MS_CLIENT_ID,client_secret:env.MS_CLIENT_SECRET,scope:"https://graph.microsoft.com/.default",grant_type:"client_credentials"})});
+ if(!response.ok)throw Error("graph_token");
+ const token=(await response.json()).access_token;if(!token)throw Error("graph_token");
+ const base="https://graph.microsoft.com/v1.0/sites/"+encodeURIComponent(env.SP_SITE_ID)+"/lists/";
+ const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
+ return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push(item.fields||{});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();}};
+}
+const classFields=["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"];
+const slotFields=["DisponibiliteID","FormationID","AnneeID","DateImmersion","Capacite","Ouvert"];
+function cutoff(){const d=new Date(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Paris",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date())+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+7);return d.toISOString().slice(0,10);}
 const TENANT="a7f315c0-79f6-4c05-92b6-c9396003e258";
 const API_ID="281e44b3-c333-4048-96e8-9765b2e6e30f";
 const SPA_ID="1cbae7de-d9fc-4659-a7da-c0623c96e789";
@@ -57,6 +70,12 @@ export default {
       headers.set("Access-Control-Allow-Headers","Authorization");
     }
     const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
+    if(url.pathname === "/admin/planning") {
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="GET")return json({error:"method_not_allowed"},405);
+      const status=await authorize(request);if(status!==200)return json({error:status===403?"forbidden":"unauthorized"},status);
+      try{const g=await businessGraph(env);const [classes,slots]=await Promise.all([g.read("Formations",classFields),g.read("Disponibilites",slotFields)]);return json({status:"ok",classes,slots,reservations:false});}catch{return json({error:"planning_unavailable"},502);}
+    }
     if(url.pathname === "/admin/session") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
       if(request.method!=="GET")return json({error:"method_not_allowed"},405);
@@ -86,6 +105,22 @@ export default {
         const lists=await fetch(graph+"/lists?$select=id&$top=1",options);
         if(!lists.ok) return json({status:"error",step,http:lists.status},502);
         await lists.json();
+        if(url.searchParams.has("importClass")) {
+          const code=url.searchParams.get("importClass");
+          const entry=CLASS_SEED.find(c=>c[0]===code);if(!entry)return json({error:"unknown_class"},400);
+          const [id,label,title,dates]=entry;const classId="INITIAL-"+id;
+          const g=await businessGraph(env);
+          const [classes,slots]=await Promise.all([g.read("Formations",["FormationID"]),g.read("Disponibilites",["DisponibiliteID"])]);
+          let created=0,existing=0;
+          if(!classes.some(c=>c.FormationID===classId))await g.add("Formations",{Title:label,FormationID:classId,Intitule:title,Voie:"Voie scolaire",Niveau:label,Actif:true,Ordre:CLASS_SEED.indexOf(entry)+1});
+          const limit=cutoff();
+          for(const date of dates.split(" ").filter(d=>d>limit)){
+            const slotId="2026-2027-"+classId+"-"+date;
+            if(slots.some(s=>s.DisponibiliteID===slotId)){existing++;continue;}
+            await g.add("Disponibilites",{Title:label+" "+date,DisponibiliteID:slotId,FormationID:classId,AnneeID:"2026-2027",DateImmersion:date,Capacite:2,Ouvert:true});created++;
+          }
+          return json({status:"ok",classe:label,created,existing,reservations:false});
+        }
         if(url.searchParams.get("init") === "1") {
           // Explicit, protected bootstrap. Run once, without concurrent calls.
           const ids={Parametres:"f3201118-d480-419d-8536-46fbaaac7577",AnneesScolaires:"12005aa7-5c1c-4d57-9b45-da37876baf46"};
@@ -175,7 +210,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.2.3",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.3.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
