@@ -30,6 +30,36 @@ export default {
         const lists=await fetch(graph+"/lists?$select=id&$top=1",options);
         if(!lists.ok) return json({status:"error",step,http:lists.status},502);
         await lists.json();
+        if(url.searchParams.get("schema") === "1") {
+          const expected={Parametres:["Cle","Valeur","Description"],AnneesScolaires:["AnneeID","DateDebut","DateFin","Actif"],Formations:["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"],Disponibilites:["DisponibiliteID","FormationID","AnneeID","DateImmersion","HeureDebut","HeureFin","Capacite","Ouvert"],Reservations:["ReservationID","DisponibiliteID","FormationID","AnneeID","IntituleFormation","Voie","DateImmersion","Nom","Prenom","Email","Telephone","Etablissement","Statut","ConventionID","StatutConvention","StatutMail","DateReservation"],JournalActivite:["Action","Auteur","Cible","DateAction","Resultat"]};
+          const found={};
+          let next=graph+"/lists?$select=id,displayName&$top=100";
+          while(next) {
+            step="schema_discovery";
+            const page=await fetch(next,options);
+            if(!page.ok) return json({status:"error",step,http:page.status},502);
+            const data=await page.json();
+            for(const list of data.value||[]) if(Object.hasOwn(expected,list.displayName)) found[list.displayName]=list.id;
+            next=data["@odata.nextLink"];
+            if(next && new URL(next).origin!=="https://graph.microsoft.com") throw Error("invalid pagination");
+          }
+          const results=await Promise.all(Object.entries(expected).map(async ([name,fields])=>{
+            if(!found[name])return {name,ok:false,missing:fields};
+            const names=new Set();
+            let next=graph+"/lists/"+encodeURIComponent(found[name])+"/columns?$select=name&$top=100";
+            while(next){
+              const page=await fetch(next,options);
+              if(!page.ok)return {name,ok:false,http:page.status};
+              const data=await page.json();
+              for(const col of data.value||[])names.add(col.name);
+              next=data["@odata.nextLink"];
+              if(next && new URL(next).origin!=="https://graph.microsoft.com")throw Error("invalid pagination");
+            }
+            const missing=fields.filter(f=>!names.has(f));
+            return {name,ok:missing.length===0,expected:fields.length,missing};
+          }));
+          return json({status:results.every(r=>r.ok)?"ok":"error",schema:results},results.every(r=>r.ok)?200:502);
+        }
         if(url.searchParams.get("write") !== "1") return json({status:"ok",entra:true,sharepoint:true,lists:true,write_test:false});
         step="write";
         const name="diagnostic-"+crypto.randomUUID()+".txt";
@@ -46,7 +76,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.2",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.1.3",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
