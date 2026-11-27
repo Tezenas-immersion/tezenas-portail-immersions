@@ -1,3 +1,4 @@
+import {xlsx,zip,saveFile} from "./exports.js?v=0120";
 "use strict";
 const tenant="a7f315c0-79f6-4c05-92b6-c9396003e258", client="1cbae7de-d9fc-4659-a7da-c0623c96e789", scope="api://281e44b3-c333-4048-96e8-9765b2e6e30f/access_as_user", redirect="https://tezenas-immersion.github.io/tezenas-portail-immersions/admin.html", authority="https://login.microsoftonline.com/"+tenant+"/oauth2/v2.0", api="https://tezenas-immersions-api.tezenas-immersion.workers.dev/admin/session";
 const $=id=>document.getElementById(id), status=t=>{$("status").textContent=t;}, b64=bytes=>btoa(String.fromCharCode(...bytes)).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_"), random=()=>b64(crypto.getRandomValues(new Uint8Array(32)));
@@ -45,7 +46,7 @@ async function showPlanning(token){
  const field=(label,input)=>{const l=el("label",label);l.append(input);return l;};
  const inp=(type,value)=>{const n=el("input");n.type=type;n.value=value;return n;};
  const select=el("select"), month=el("h3"), content=el("div"), editor=el("div"), feedback=el("p"), summary=el("p"), nav=el("div");
- const now=new Date();let view=new Date(now.getFullYear(),now.getMonth(),1), data={classes:[],slots:[]}, mode="calendar", busy=false;
+ const now=new Date();let view=new Date(now.getFullYear(),now.getMonth(),1), data={classes:[],slots:[]}, mode="overview", busy=false;
  const iso=(d)=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-");
  const pretty=d=>new Date(d+"T12:00:00Z").toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"UTC"});
  const endpoint=api.replace("/admin/session","");
@@ -79,24 +80,78 @@ async function showPlanning(token){
  }
  function render(){
    content.replaceChildren();editor.replaceChildren();month.textContent=view.toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
-   select.hidden=mode!=="calendar";nav.hidden=mode==="classes"||mode==="reservations";
+   select.hidden=mode!=="calendar";nav.hidden=mode==="classes"||mode==="reservations"||mode==="overview";
    const id=select.value, days=new Date(view.getFullYear(),view.getMonth()+1,0).getDate(), dateAt=d=>iso(new Date(view.getFullYear(),view.getMonth(),d));
+   if(mode==="overview"){
+     const area=el("div","Chargement des indicateurs…");content.append(area);
+     call("/admin/reservations").then(d=>{
+       area.replaceChildren();
+       const active=r=>!["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());
+       const real=d.rows.filter(r=>!r.test&&active(r)),tests=d.rows.filter(r=>r.test&&active(r));
+       const classes=data.classes.filter(c=>c.Actif),ids=new Set(classes.map(c=>c.FormationID));
+       const slots=data.slots.filter(s=>s.Ouvert&&ids.has(s.FormationID)),capacity=slots.reduce((n,s)=>n+Number(s.Capacite),0);
+       const occupied=slots.reduce((n,s)=>n+d.rows.filter(r=>active(r)&&r.slot===s.DisponibiliteID).length,0);
+       const metrics=el("div");metrics.className="metrics";
+       for(const [label,value] of [["Places au planning",capacity],["Inscriptions actives réelles",real.length],["Places non occupées au planning",Math.max(0,capacity-occupied)],["Conventions réelles disponibles",real.filter(r=>r.hasPdf).length],["Réservations de recette actives",tests.length],["Annulations réelles",d.rows.filter(r=>!r.test&&!active(r)).length]]){
+         const card=el("div");card.append(el("strong",String(value)),el("span",label));metrics.append(card);
+       }
+       area.append(el("h3","Pilotage — toutes années enregistrées"),metrics,el("p","Capacité du planning ouvert, y compris les dates passées et les dates clôturées à J-7. Les tests occupent des places mais ne sont pas comptés comme inscriptions réelles."));
+       for(const title of [...new Set(classes.map(c=>c.Intitule))]){
+         const group=new Set(classes.filter(c=>c.Intitule===title).map(c=>c.FormationID));
+         const ss=slots.filter(x=>group.has(x.FormationID)),cap=ss.reduce((n,x)=>n+Number(x.Capacite),0),used=real.filter(r=>ss.some(x=>x.DisponibiliteID===r.slot)).length;
+         const p=el("progress");p.max=Math.max(1,cap);p.value=used;area.append(el("p",title+" — "+used+" / "+cap+" inscriptions réelles"),p);
+       }
+     }).catch(e=>{area.textContent=e.message;});return;
+   }
    if(mode==="reservations"){
      const area=el("div");content.append(area);
      area.append(el("p","Chargement des réservations…"));
      call("/admin/reservations").then(d=>{
        area.replaceChildren();
-       if(!d.rows.length)area.append(el("p","Aucune réservation réelle enregistrée."));
+       const filters=el("div");filters.className="filters";
+       const search=inp("search",""), campus=el("select"), formation=el("select"), classe=el("select"), year=el("select"), state=el("select"), kind=el("select"), from=inp("date",""), to=inp("date","");
+       const options=(node,values,all)=>{node.append(el("option",all));node.firstChild.value="";for(const [value,label] of values){const o=el("option",label);o.value=value;node.append(o);}};
+       const unique=xs=>[...new Set(xs.filter(Boolean))].sort().map(x=>[x,x]);
+       options(campus,unique(d.rows.map(r=>r.way)),"Tous campus");options(formation,unique(d.rows.map(r=>r.formation)),"Toutes formations");
+       options(classe,data.classes.map(c=>[c.FormationID,c.Niveau+" — "+c.Intitule]),"Toutes classes");options(year,unique(d.rows.map(r=>r.year)),"Toutes années");
+       options(state,[["active","Actives"],["cancelled","Annulées"]],"Tous statuts");
+       options(kind,[["real","Réelles"],["test","Recette"]],"Toutes catégories");kind.value="real";
+       const isCancelled=r=>["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());
+       const fold=x=>String(x||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+       const matches=r=>(!search.value||fold(r.nom+" "+r.prenom+" "+r.email).includes(fold(search.value)))&&(!campus.value||r.way===campus.value)&&(!formation.value||r.formation===formation.value)&&(!classe.value||r.classe===classe.value)&&(!year.value||r.year===year.value)&&(!state.value||(state.value==="cancelled")===isCancelled(r))&&(!kind.value||(kind.value==="test")===r.test)&&(!from.value||r.date>=from.value)&&(!to.value||r.date<=to.value);
+       for(const [l,n] of [["Recherche",search],["Campus",campus],["Formation",formation],["Classe",classe],["Année scolaire",year],["Statut",state],["Catégorie",kind],["Du",from],["Au",to]])filters.append(field(l,n));
+       area.append(filters);
+       const count=el("p"),exportBar=el("div");exportBar.className="toolbar";area.append(count,exportBar);
+       const selected=()=>d.rows.filter(matches);
+       const classLabel=r=>data.classes.find(c=>c.FormationID===r.classe)?.Niveau||r.classe;
+       const candidateGroups=[
+         ["Identité",["Civilite","Nom","Prenom","DateNaissance","Telephone","Email","VilleResidence","CodePostalResidence"]],
+         ["Scolarité",["Terminale","SpecialitesBac","Etablissement","AdresseEtablissement","EmailEtablissement","TelephoneEtablissement","CiviliteChef","ChefEtablissement"]],
+         ["Immersion",["IntituleFormation","FormationID","Voie","AnneeID","DateImmersion","Statut","DateReservation","StatutConvention","StatutMail","ReservationID","DisponibiliteID","Acceptation","DateAcceptation","VersionAcceptation"]]
+       ];
+       const keys=candidateGroups.flatMap(g=>g[1]);
+       const labels={Civilite:"Civilité",Prenom:"Prénom",DateNaissance:"Date de naissance",VilleResidence:"Ville",CodePostalResidence:"Code postal",SpecialitesBac:"Spécialités",Etablissement:"Établissement",AdresseEtablissement:"Adresse établissement",EmailEtablissement:"Mail établissement",TelephoneEtablissement:"Téléphone établissement",CiviliteChef:"Civilité direction",ChefEtablissement:"Chef d’établissement",IntituleFormation:"Formation",FormationID:"Classe",AnneeID:"Année scolaire",DateImmersion:"Date d’immersion",DateReservation:"Date de réservation",StatutConvention:"Convention",StatutMail:"Confirmation mail",ReservationID:"Référence",DisponibiliteID:"Créneau",DateAcceptation:"Date de confirmation",VersionAcceptation:"Version de confirmation"};
+       const dateFR=x=>/^\d{4}-\d{2}-\d{2}$/.test(String(x))?String(x).split("-").reverse().join("/"):x;
+       const display=(k,v)=>k==="FormationID"?(data.classes.find(c=>c.FormationID===v)?.Niveau||v):dateFR(v);
+       const excel=btn("Exporter Excel (.xlsx)",async()=>{if(busy)return;const rows=selected();if(!rows.length)return;if(rows.length>500){feedback.textContent="Limite de 500 lignes : affinez les filtres.";return;}if(!confirm("Exporter "+rows.length+" dossier(s) candidat contenant des données personnelles ?"))return;busy=true;excel.disabled=true;
+         try{const out=[];for(const r of rows){const v=await call("/admin/candidate?id="+encodeURIComponent(r.id));out.push(keys.map(k=>display(k,v.candidate[k])));}saveFile(xlsx(keys.map(k=>labels[k]||k),out),"ImmersTez_Inscriptions_"+iso(new Date())+".xlsx");feedback.textContent=rows.length+" dossier(s) exporté(s).";}
+         catch(e){feedback.textContent="Export Excel interrompu : "+e.message;alert(feedback.textContent);}finally{busy=false;excel.disabled=false;}
+       });
+       const archive=btn("Exporter conventions ZIP",async()=>{if(busy)return;const rows=selected().filter(r=>r.hasPdf);if(!rows.length){alert("Aucun PDF disponible dans cette sélection.");return;}if(rows.length>30){alert("Limite de 30 PDF par export : affinez les filtres.");return;}if(!confirm("Télécharger "+rows.length+" convention(s) contenant des données personnelles ?"))return;busy=true;archive.disabled=true;
+         try{const files=[],names=new Set();let size=0;for(const r of rows){const res=await fetch(endpoint+"/admin/convention-download?id="+encodeURIComponent(r.id),{headers:{Authorization:"Bearer "+token},cache:"no-store"});if(!res.ok)throw Error("PDF indisponible : "+r.id);const bytes=await res.arrayBuffer();size+=bytes.byteLength;if(size>50000000)throw Error("Limite de 50 Mo : affinez les filtres.");let name=res.headers.get("Content-Disposition")?.match(/filename="([A-Za-z0-9_.-]+)"/)?.[1]||"Convention.pdf";const base=name;let i=2;while(names.has(name.toLowerCase()))name=base.replace(/\.pdf$/i,"_"+i++ +".pdf");names.add(name.toLowerCase());files.push({name,data:bytes});}saveFile(zip(files),"ImmersTez_Conventions_"+iso(new Date())+".zip");feedback.textContent=files.length+" PDF exportés.";}
+         catch(e){feedback.textContent="Export ZIP interrompu : "+e.message;alert(feedback.textContent);}finally{busy=false;archive.disabled=false;}
+       });exportBar.append(excel,archive);
+
        const table=el("table"),head=el("tr"),wrap=el("div");wrap.className="tablewrap";
        for(const t of ["Candidat","Formation / classe","Date","État","Convention","Mail","Action"])head.append(el("th",t));table.append(head);
-       for(const r of d.rows.sort((a,b)=>String(a.date).localeCompare(String(b.date)))){
+       const refreshRows=()=>{for(const row of Array.from(table.querySelectorAll("tr")).slice(1))row.remove();const rows=selected();count.textContent=rows.length+" dossier(s) correspondant aux filtres";for(const r of rows.sort((a,b)=>String(a.date).localeCompare(String(b.date)))){
          const tr=el("tr");
-         for(const t of [r.prenom+" "+r.nom,r.formation+" / "+r.classe,r.date,r.statut,r.convention||"—",r.mail||"—"])tr.append(el("td",t));
+         for(const t of [r.prenom+" "+r.nom,r.formation+" / "+classLabel(r),dateFR(r.date),r.statut,r.convention||"—",r.mail||"—"])tr.append(el("td",t));
          const td=el("td"),cancel=btn("Annuler",async()=>{if(busy||!confirm("Annuler cette réservation et libérer la place ?"))return;busy=true;try{await call("/admin/reservation-change",{action:"cancel",id:r.id,etag:r.etag});feedback.textContent="Réservation annulée.";render();}catch(e){feedback.textContent=e.message;}finally{busy=false;}});
          cancel.disabled=["annule","annulee","annulé","annulée","cancelled"].includes(String(r.statut).toLowerCase());td.append(cancel);
          const details=btn("Fiche candidat",async()=>{if(busy)return;busy=true;try{
            const d=await call("/admin/candidate?id="+encodeURIComponent(r.id));editor.replaceChildren(el("h3","Fiche candidat — "+r.prenom+" "+r.nom));
-           for(const [k,v] of Object.entries(d.candidate))editor.append(el("p",k+" : "+(v??"—")));
+           for(const [group,fields] of candidateGroups){editor.append(el("h4",group));const box=el("div");box.className="filters";for(const k of fields){const line=el("div");line.append(el("strong",labels[k]||k),el("p",String(display(k,d.candidate[k])??"—")));box.append(line);}editor.append(box);}
            editor.scrollIntoView({block:"nearest"});
          }catch(e){feedback.textContent=e.message;}finally{busy=false;}});
          td.append(details);
@@ -122,7 +177,7 @@ async function showPlanning(token){
          }
          tr.append(td);table.append(tr);
        }
-       if(d.rows.length){wrap.append(table);area.append(wrap);}
+       }; refreshRows();for(const n of [search,campus,formation,classe,year,state,kind,from,to])n.addEventListener("input",refreshRows);wrap.append(table);area.append(wrap);
        area.append(el("p",d.recipeCount+" ligne(s) de recette V0.6 exclue(s)."));
      }).catch(e=>{area.replaceChildren(el("p",e.message));});return;
    }
@@ -143,7 +198,7 @@ async function showPlanning(token){
    }));content.append(bulk);
  }
  nav.className="toolbar";nav.append(btn("‹",()=>{view.setMonth(view.getMonth()-1);render();}),month,btn("›",()=>{view.setMonth(view.getMonth()+1);render();}));
- const tabs=el("div");tabs.className="toolbar";for(const [m,t] of [["calendar","Par classe"],["global","Vue globale"],["classes","Formations et classes"],["reservations","Réservations"]])tabs.append(btn(t,()=>{mode=m;render();}));tabs.append(btn("Actualiser",async()=>{try{await load();render();}catch(e){feedback.textContent=e.message;}}));
+ const tabs=el("div");tabs.className="toolbar";for(const [m,t] of [["overview","Tableau de bord"],["calendar","Par classe"],["global","Vue globale"],["classes","Formations et classes"],["reservations","Réservations"]])tabs.append(btn(t,()=>{mode=m;render();}));tabs.append(btn("Actualiser",async()=>{try{await load();render();}catch(e){feedback.textContent=e.message;}}));
  const recipe=el("details"),output=el("p");recipe.append(el("summary","Nettoyage de la recette V0.6"),el("p","Supprime uniquement les inscriptions techniques RECETTE-V06 identifiées par le serveur."),btn("Nettoyer les tests V0.6",async()=>{if(busy||!confirm("Supprimer les réservations fictives V0.6 ?"))return;busy=true;try{const d=await call("/admin/reservation-change",{action:"cleanup-v06"});output.textContent=d.removed+" ligne(s) de recette supprimée(s).";}catch(e){output.textContent=e.message;}finally{busy=false;}}),output);panel.append(recipe);
  const previewBox=el("details"),previewCourse=el("select"),previewDate=inp("date",""),previewResult=el("pre");
  previewBox.append(el("summary","Recette métier V0.7"),el("p","Validation serveur d’un candidat fictif sur le vrai planning, sans enregistrement."),field("Formation",previewCourse),field("Date",previewDate),btn("Vérifier le créneau",async()=>{
