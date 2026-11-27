@@ -1,12 +1,12 @@
 const CLASS_SEED=[["CG1","CG 1","BTS Comptabilité et Gestion","2026-12-10 2027-01-07 2027-01-14 2027-01-21 2027-01-28 2027-02-04 2027-02-11 2027-02-18 2027-02-25 2027-03-04 2027-03-11"],["SAM1","SAM 1","BTS AMRH (ex-SAM)","2026-12-11 2026-12-18 2027-01-08 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["MCO1","MCO 1","BTS MCO","2026-12-15 2027-01-05 2027-01-12 2027-02-02 2027-02-09 2027-02-16 2027-02-23 2027-03-02 2027-03-09"],["NDRC1","NDRC 1","BTS NDRC","2027-01-06 2027-01-13 2027-01-20 2027-02-03 2027-02-10 2027-02-17 2027-02-24 2027-03-03 2027-03-10"],["TOA1","TOA 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"],["TOB1","TOB 1","BTS Tourisme","2026-12-18 2027-01-15 2027-01-22 2027-01-29 2027-02-05 2027-02-12 2027-02-19 2027-02-26 2027-03-05"]];
-const LIST_IDS={Formations:"76ea6394-cee3-405d-b67c-92fcfbb0c718",Disponibilites:"b92a4618-af9f-4e19-aae9-d68f8b0730f9"};
+const LIST_IDS={Formations:"76ea6394-cee3-405d-b67c-92fcfbb0c718",Disponibilites:"b92a4618-af9f-4e19-aae9-d68f8b0730f9",Reservations:"9da020ad-1265-43bd-b611-6e8c209908a4"};
 async function businessGraph(env){
  const response=await fetch("https://login.microsoftonline.com/"+encodeURIComponent(env.MS_TENANT_ID)+"/oauth2/v2.0/token",{method:"POST",body:new URLSearchParams({client_id:env.MS_CLIENT_ID,client_secret:env.MS_CLIENT_SECRET,scope:"https://graph.microsoft.com/.default",grant_type:"client_credentials"})});
  if(!response.ok)throw Error("graph_token");
  const token=(await response.json()).access_token;if(!token)throw Error("graph_token");
  const base="https://graph.microsoft.com/v1.0/sites/"+encodeURIComponent(env.SP_SITE_ID)+"/lists/";
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
- return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push(item.fields||{});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();}};
+ return {async read(list,fields){let next=base+LIST_IDS[list]+"/items?$expand=fields($select="+fields.join(",")+")&$top=100";const out=[];while(next){if(new URL(next).origin!=="https://graph.microsoft.com")throw Error("pagination");const r=await fetch(next,{headers});if(!r.ok)throw Error("graph_read");const j=await r.json();for(const item of j.value||[])out.push({...item.fields,_itemId:item.id,_etag:item.eTag});next=j["@odata.nextLink"]; }return out;},async add(list,fields){const r=await fetch(base+LIST_IDS[list]+"/items",{method:"POST",headers,body:JSON.stringify({fields})});if(!r.ok)throw Error("graph_write");await r.json();},async patch(list,item,fields){if(!item._etag||!/^\d+$/.test(item._itemId))throw Error("missing_version");const r=await fetch(base+LIST_IDS[list]+"/items/"+item._itemId+"/fields",{method:"PATCH",headers:{...headers,"If-Match":item._etag},body:JSON.stringify(fields)});if(r.status===412)throw Error("conflict");if(!r.ok)throw Error("graph_write");}};
 }
 const classFields=["FormationID","Intitule","Voie","Niveau","Description","Actif","Ordre"];
 const slotFields=["DisponibiliteID","FormationID","AnneeID","DateImmersion","Capacite","Ouvert"];
@@ -66,8 +66,8 @@ export default {
     const headers = new Headers({"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store","X-Content-Type-Options":"nosniff","Vary":"Origin"});
     if(origin === "https://tezenas-immersion.github.io") {
       headers.set("Access-Control-Allow-Origin",origin);
-      headers.set("Access-Control-Allow-Methods","GET, OPTIONS");
-      headers.set("Access-Control-Allow-Headers","Authorization");
+      headers.set("Access-Control-Allow-Methods","GET, POST, OPTIONS");
+      headers.set("Access-Control-Allow-Headers","Authorization, Content-Type");
     }
     const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers});
     if(url.pathname === "/public/planning") {
@@ -81,6 +81,47 @@ export default {
         const allowed=new Set(active.map(c=>c.FormationID));
         return json({status:"ok",reservations:false,classes:active.map(c=>({id:c.FormationID,title:c.Intitule,label:c.Niveau,order:c.Ordre})),slots:slots.filter(s=>allowed.has(s.FormationID)&&s.Ouvert===true&&/^\d{4}-\d{2}-\d{2}$/.test(s.DateImmersion)&&s.DateImmersion>limit&&Number.isInteger(s.Capacite)&&s.Capacite>0).map(s=>({classId:s.FormationID,date:s.DateImmersion,capacity:s.Capacite}))});
       }catch{return json({error:"planning_unavailable"},502);}
+    }
+    if(url.pathname === "/admin/change") {
+      if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
+      if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+      const status=await authorize(request);if(status!==200)return json({error:status===403?"forbidden":"unauthorized"},status);
+      try{
+        const raw=await request.text();if(raw.length>12000)return json({error:"invalid_input"},400);
+        let b;try{b=JSON.parse(raw);}catch{return json({error:"invalid_input"},400);}
+        if(!b||typeof b!=="object")return json({error:"invalid_input"},400);
+        const g=await businessGraph(env);
+        const classes=await g.read("Formations",classFields);
+        const cls=classes.find(c=>c.FormationID===b.id);
+        if(b.action==="class"){
+          const valid=x=>typeof x==="string"&&x.trim().length>0&&x.trim().length<=150;
+          if(!valid(b.label)||!valid(b.title)||!["Voie scolaire","Apprentissage"].includes(b.way)||typeof b.active!=="boolean")return json({error:"invalid_input"},400);
+          const fields={Title:b.label.trim(),Niveau:b.label.trim(),Intitule:b.title.trim(),Voie:b.way,Actif:b.active};
+          if(b.id){if(!cls)return json({error:"not_found"},404);if(b.etag!==cls._etag)return json({error:"conflict"},409);if(b.way!==cls.Voie)return json({error:"way_immutable"},400);await g.patch("Formations",cls,fields);}
+          else{if(classes.some(c=>c.Voie===b.way&&c.Niveau.toLowerCase()===fields.Niveau.toLowerCase()))return json({error:"duplicate_class"},409);await g.add("Formations",{...fields,FormationID:crypto.randomUUID(),Ordre:classes.length+1});}
+          return json({status:"ok"});
+        }
+        if(b.action!=="day"||!cls||!Number.isInteger(b.capacity)||b.capacity<1||b.capacity>30||typeof b.open!=="boolean"||typeof b.date!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(b.date))return json({error:"invalid_input"},400);
+        const date=new Date(b.date+"T12:00:00Z");if(!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==b.date)return json({error:"invalid_input"},400);
+        const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Paris",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+        if(b.date<today)return json({error:"past_date"},400);
+        const y=date.getUTCFullYear()-(date.getUTCMonth()<8?1:0),year=y+"-"+(y+1);
+        const slots=await g.read("Disponibilites",slotFields);
+        const matches=slots.filter(s=>s.FormationID===b.id&&s.DateImmersion===b.date);
+        if(matches.length>1)return json({error:"duplicate_slot"},409);
+        const slot=matches[0];
+        if(slot){
+          if(b.etag!==slot._etag)return json({error:"conflict"},409);
+          const reservations=await g.read("Reservations",["DisponibiliteID","Statut"]);
+          const count=reservations.filter(r=>r.DisponibiliteID===slot.DisponibiliteID&&!["annule","annulee","annulé","annulée","cancelled"].includes(String(r.Statut||"").toLowerCase())).length;
+          if(b.capacity<count)return json({error:"capacity_below_bookings"},409);
+          await g.patch("Disponibilites",slot,{Capacite:b.capacity,Ouvert:b.open});
+        }else{
+          if(!b.open||b.etag)return json({error:"conflict"},409);
+          await g.add("Disponibilites",{Title:cls.Niveau+" "+b.date,DisponibiliteID:year+"-"+b.id+"-"+b.date,FormationID:b.id,AnneeID:year,DateImmersion:b.date,Capacite:b.capacity,Ouvert:true});
+        }
+        return json({status:"ok"});
+      }catch(e){return json({error:e?.message==="conflict"?"conflict":"save_failed"},e?.message==="conflict"?409:502);}
     }
     if(url.pathname === "/admin/planning") {
       if(request.method==="OPTIONS")return new Response(null,{status:204,headers});
@@ -222,7 +263,7 @@ export default {
     }
     if(request.method === "OPTIONS") return new Response(null,{status:204,headers});
     if(request.method !== "GET") return json({error:"method_not_allowed"},405);
-    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.3.1",status:"ok",mode:"demo",reservations:false});
+    if(url.pathname === "/" || url.pathname === "/health") return json({service:"tezenas-immersions-api",version:"0.4.0",status:"ok",mode:"demo",reservations:false});
     return json({error:"not_found"},404);
   }
 };
